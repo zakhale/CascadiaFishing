@@ -1,7 +1,7 @@
 # Cascadia Fishing — Setup Guide
 
 This turns the app into a real website at a URL like `cascadia-fishing.vercel.app`,
-synced across your iPhone, iPad, and desktop.
+synced across your iPhone, iPad, and desktop. 
 
 ## Part 1 — Get the code onto GitHub
 
