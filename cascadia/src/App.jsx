@@ -1001,6 +1001,11 @@ If user wants more detail, they'll ask "tell me more". Default to brevity. Exper
 
 Be specific: use WDFW marine area numbers, name specific spots, flag mark-selective/hatchery/size rules. Use web search for current WDFW regulations, creel data, and conditions. Verify: wdfw.wa.gov.`;
 
+ // Cap how much chat history gets resent to the API on each question — keeps
+  // per-question cost predictable as a conversation grows. The FULL history is
+  // still saved and shown in the UI; this only trims what's sent to Claude.
+  const MAX_HISTORY_MESSAGES = 16; // ~8 question/answer pairs of recent context
+
   const send = async(msg,toolLabel)=>{
     const text=(msg||input).trim();
     if(!text||loading) return;
@@ -1008,8 +1013,9 @@ Be specific: use WDFW marine area numbers, name specific spots, flag mark-select
     const newH=[...chat,userMsg];
     onSaveChat(newH);
     setInput('');setLoading(true);
+    const trimmedForApi = newH.length>MAX_HISTORY_MESSAGES ? newH.slice(-MAX_HISTORY_MESSAGES) : newH;
     try{
-      const reply=await askClaude(newH,buildSystem(),{maxTokens:1000,webSearch:true});
+      const reply=await askClaude(trimmedForApi,buildSystem(),{maxTokens:1000,webSearch:true});
       onSaveChat([...newH,{role:'assistant',content:reply,toolLabel}]);
     }catch(e){
       const errorMsg = e.message || 'Connection error — check your network and try again.';
