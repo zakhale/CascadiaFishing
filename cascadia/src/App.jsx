@@ -4,8 +4,8 @@ import { useState, useEffect, useRef } from "react";
 // Fill these in once you've created your Firebase project (see README.md).
 // Until you do, the app runs in local-only mode automatically.
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  projectId: "YOUR_PROJECT_ID",
+  apiKey: "AIzaSyCfdsnnux0j8z0Llw-0qiNkkbLgytMs79g",
+  projectId: "cascadia-fishing",
 };
 const isFirebaseConfigured = () =>
   firebaseConfig.apiKey &&
