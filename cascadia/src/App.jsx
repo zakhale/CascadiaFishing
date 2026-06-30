@@ -695,9 +695,21 @@ function CascadiaApp({syncStatus,userEmail,onSignOut}){
 }
 
 function SettingsTab({syncStatus,userEmail,onSignOut,T}){
-  const [key,setKey]=useState(getApiKey());
-  const [saved,setSaved]=useState(false);
-  const save=()=>{ setApiKey(key.trim()); setSaved(true); setTimeout(()=>setSaved(false),2000); };
+  const storedKey = getApiKey();
+  const [key,setKey]=useState(storedKey);
+  const [status,setStatus]=useState(storedKey ? 'saved' : 'empty'); // 'saved' | 'unsaved' | 'empty'
+
+  const maskedKey = storedKey ? `${storedKey.slice(0,10)}…${storedKey.slice(-4)}` : '';
+
+  const handleChange=(v)=>{
+    setKey(v);
+    setStatus(v.trim()===getApiKey() ? (v.trim()?'saved':'empty') : 'unsaved');
+  };
+  const save=()=>{
+    setApiKey(key.trim());
+    setStatus(key.trim() ? 'saved' : 'empty');
+  };
+
   return(
     <div style={{display:'flex',flexDirection:'column',gap:14}}>
       <div style={cardOf(T)}>
@@ -707,8 +719,13 @@ function SettingsTab({syncStatus,userEmail,onSignOut,T}){
           <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" style={{color:T.accent}}>console.anthropic.com</a>. Your key is stored only in this browser — it's never sent anywhere except directly to Anthropic via our small relay.
         </div>
         <div style={{display:'flex',gap:8}}>
-          <input type="password" value={key} onChange={e=>setKey(e.target.value)} placeholder="sk-ant-…" style={{...inpOf(T),flex:1}}/>
-          <button onClick={save} style={btnOf(T,'green')}>{saved?'Saved ✓':'Save'}</button>
+          <input type="password" value={key} onChange={e=>handleChange(e.target.value)} placeholder="sk-ant-…" style={{...inpOf(T),flex:1}}/>
+          <button onClick={save} disabled={status!=='unsaved'} style={{...btnOf(T,'green'),opacity:status==='unsaved'?1:0.5,cursor:status==='unsaved'?'pointer':'default'}}>Save</button>
+        </div>
+        <div style={{marginTop:10,fontSize:12,fontFamily:F}}>
+          {status==='saved'&&<span style={{color:T.accent}}>✓ Saved — currently using key ending in …{storedKey.slice(-4)}</span>}
+          {status==='unsaved'&&<span style={{color:T.warn}}>Not saved yet — click Save to apply this key on this device.</span>}
+          {status==='empty'&&<span style={{color:T.sub}}>No key saved yet on this device.</span>}
         </div>
       </div>
       <div style={cardOf(T)}>
