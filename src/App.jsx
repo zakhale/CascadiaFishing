@@ -1,31 +1,35 @@
 import { useState, useEffect, useRef } from "react";
 
 // ── Anthropic API access ─────────────────────────────────────────────────────
-// Inside a published Claude.ai artifact, calls to api.anthropic.com are proxied
-// and authenticated automatically — no key needed, and none should be entered.
-// Running standalone (e.g. this file built with Vite and deployed to your own
-// domain), the browser must send a real key directly. Set it as an environment
-// variable at build time — VITE_ANTHROPIC_API_KEY — never hardcode it here,
-// since anything in this file ships to every visitor's browser.
-// Inside a published Claude.ai artifact, calls to api.anthropic.com are proxied
-// and authenticated automatically — no key needed, and none should be entered.
-// Running standalone (e.g. this file built with Vite and deployed to your own
-// domain), the browser must send a real key directly.
+// Two contexts this file can run in:
 //
-// IMPORTANT: this file must NEVER contain the literal token `import.meta`.
-// Claude.ai's artifact runtime executes this code as a plain script, not a
-// real ES module — `import.meta` is a SyntaxError there (not just undefined),
-// which fails at parse time before anything else can run, including any
-// try/catch. That's a hard constraint, not a style preference.
+// 1. Inside a published Claude.ai artifact: calls to api.anthropic.com are
+//    proxied and authenticated automatically — no key needed from anyone.
 //
-// The safe way to read a build-time env var in code that must run in both
-// contexts: reference a plain global identifier and guard it with `typeof`.
-// `typeof` on an undeclared identifier never throws, in any context. Vite
-// replaces __ANTHROPIC_API_KEY__ with the real value at build time via the
-// `define` config below — see setup notes at the bottom of this file.
+// 2. Standalone (this file built with Vite, deployed to your own domain):
+//    each visitor enters their OWN Anthropic API key in the Settings tab.
+//    It's stored locally in their browser (and synced to their account if
+//    signed in) and sent, per-request, to a serverless proxy at /api/claude
+//    (see api/claude.js in this project) which forwards it to Anthropic with
+//    the right headers. The key is never baked into the deployed site itself
+//    — nobody's key ships to every visitor; each person supplies their own,
+//    the same way Claude.ai artifact usage bills whoever is viewing, not the
+//    creator. /api/claude must live at that exact path (a Vercel serverless
+//    function is auto-detected only inside a top-level /api folder) — see
+//    setup notes at the bottom of this file.
 const isInClaudeArtifact = () => typeof window!=='undefined' && !!window.storage;
-const ANTHROPIC_API_KEY = typeof __ANTHROPIC_API_KEY__!=='undefined' ? __ANTHROPIC_API_KEY__ : '';
-const isAnthropicConfigured = () => isInClaudeArtifact() || !!ANTHROPIC_API_KEY;
+let userApiKey = ''; // in-memory cache, set by loadUserApiKey() on startup
+const isAnthropicConfigured = () => isInClaudeArtifact() || !!userApiKey;
+async function loadUserApiKey(){
+  if(isInClaudeArtifact()) return '';
+  const stored = await load('userApiKey');
+  userApiKey = stored || '';
+  return userApiKey;
+}
+function setUserApiKey(key){
+  userApiKey = (key||'').trim();
+  save('userApiKey', userApiKey);
+}
 
 // ── Firebase backend (REST API — no SDK import needed in this environment) ──
 // Edit these once you've created your Firebase project (see setup notes at
@@ -186,7 +190,7 @@ function BrandMark({T,size=34}){
 }
 
 // ── Constants ───────────────────────────────────────────────────────────────
-const TABS = ["AI Guide","Dashboard","My Waters","Log","Gear","Regs","History"];
+const TABS = ["AI Guide","Dashboard","My Waters","Log","Gear","Regs","History","Settings"];
 const SPECIES = ["Chinook (King)","Coho (Silver)","Pink (Humpy)","Chum (Dog)","Sockeye (Red)",
   "Kokanee","Steelhead","Sea-run Cutthroat","Trout (Resident)","Largemouth Bass","Smallmouth Bass","Other"];
 const TECHNIQUES = ["Trolling","Mooching","Jigging","Drift Fishing","Casting – Spoon",
@@ -403,7 +407,7 @@ async function save(k,v){try{await stor.set(k,JSON.stringify(v));}catch{}}
 async function askClaude(messages, system, {maxTokens=1000,webSearch=false}={}) {
   try{
     if(!isAnthropicConfigured()){
-      throw new Error('No Anthropic API key configured for this deployment. Set VITE_ANTHROPIC_API_KEY at build time — see setup notes at the bottom of this file.');
+      throw new Error('No Anthropic API key set. Add your own key in the Settings tab.');
     }
     // Remove toolLabel field before sending to API — it's only for tracking which tool generated responses
     const cleanMessages = messages.map(m => {
@@ -414,13 +418,13 @@ async function askClaude(messages, system, {maxTokens=1000,webSearch=false}={}) 
     if(webSearch) body.tools=[{type:'web_search_20250305',name:'web_search'}];
 
     const headers={'Content-Type':'application/json'};
-    // Inside Claude.ai artifacts, calls are proxied+authenticated automatically.
-    // Standalone, send the real key directly from the browser (see the notes
-    // above ANTHROPIC_API_KEY — this is a real tradeoff of a serverless setup).
+    // Inside Claude.ai artifacts, calls are proxied+authenticated automatically,
+    // hitting Anthropic directly. Standalone, route through this project's own
+    // serverless proxy (/api/claude) so each visitor's key stays server-side
+    // for that one request rather than being embedded in the deployed site.
+    const endpoint = isInClaudeArtifact() ? 'https://api.anthropic.com/v1/messages' : '/api/claude';
     if(!isInClaudeArtifact()){
-      headers['x-api-key']=ANTHROPIC_API_KEY;
-      headers['anthropic-version']='2023-06-01';
-      headers['anthropic-dangerous-direct-browser-access']='true';
+      headers['x-api-key']=userApiKey;
     }
 
     // Web search requests take longer — give them more time
@@ -430,7 +434,7 @@ async function askClaude(messages, system, {maxTokens=1000,webSearch=false}={}) 
     
     let res;
     try{
-      res=await fetch('https://api.anthropic.com/v1/messages',{
+      res=await fetch(endpoint,{
         method:'POST',
         headers,
         body:JSON.stringify(body),
@@ -637,7 +641,13 @@ function BlackmouthApp({syncStatus,onSignOut}){
   const [aiPreFill,setAPF]     = useState('');
   const [loaded,setLoaded]     = useState(false);
   const [printJob,setPrintJob] = useState(null);
+  const [hasApiKey,setHasApiKey] = useState(isInClaudeArtifact());
   const T = dark ? DARK : LIGHT;
+
+  useEffect(()=>{
+    loadUserApiKey().then(k=>setHasApiKey(isInClaudeArtifact()||!!k));
+  },[]);
+  const saveApiKey = key => { setUserApiKey(key); setHasApiKey(isInClaudeArtifact()||!!key); };
 
   useEffect(()=>{
     (async()=>{
@@ -715,9 +725,9 @@ function BlackmouthApp({syncStatus,onSignOut}){
             <div style={{display:'flex',alignItems:'center',gap:6}}>
               {syncStatus==='synced'&&<span title="Synced to your account" style={{fontSize:10,color:T.accent,fontFamily:F}}>☁ Synced</span>}
               {syncStatus==='local'&&<span title="Saved to this Claude account only" style={{fontSize:10,color:T.sub,fontFamily:F}}>📱 Local only</span>}
-              {isAnthropicConfigured()
+              {hasApiKey
                 ? <span title="AI Guide is connected and ready" style={{fontSize:10,color:T.accent,fontFamily:F}}>🤖 AI Ready</span>
-                : <span title="No Anthropic API key configured for this deployment — AI Guide, Trip Planner, and photo analysis won't work until VITE_ANTHROPIC_API_KEY is set at build time. See setup notes at the bottom of the source file." style={{fontSize:10,color:T.err,fontFamily:F,cursor:'help'}}>⚠ No AI Key</span>
+                : <span onClick={()=>setTab(7)} title="No Anthropic API key set — tap to add yours in Settings" style={{fontSize:10,color:T.err,fontFamily:F,cursor:'pointer',textDecoration:'underline'}}>⚠ No AI Key</span>
               }
               <button onClick={toggleDark} style={{...btnOf(T,'ghost'),padding:'5px 11px',fontSize:12}}>{dark?'☀️ Light':'🌑 Dark'}</button>
               {syncStatus==='synced'&&onSignOut&&<button onClick={onSignOut} style={{...btnOf(T,'ghost'),padding:'5px 9px',fontSize:11}}>Sign out</button>}
@@ -725,6 +735,7 @@ function BlackmouthApp({syncStatus,onSignOut}){
           </div>
           <div style={{display:'flex',overflowX:'auto',gap:2,scrollbarWidth:'none'}}>
             {TABS.map((t,i)=>(
+              (t==='Settings'&&isInClaudeArtifact()) ? null :
               <button key={t} onClick={()=>setTab(i)} style={{padding:'7px 13px',borderRadius:'8px 8px 0 0',border:'none',cursor:'pointer',fontSize:12,fontWeight:tab===i?'600':'400',fontFamily:F,whiteSpace:'nowrap',flexShrink:0,background:'transparent',color:tab===i?T.text:T.sub,borderBottom:tab===i?`2px solid ${T.hot}`:'2px solid transparent',transition:'all .12s'}}>{t}</button>
             ))}
           </div>
@@ -739,6 +750,7 @@ function BlackmouthApp({syncStatus,onSignOut}){
         {tab===4&&<GearManager gear={gear} onSave={saveGear} configs={configs} onSaveConfigs={saveConfigs} boats={boats} onSaveBoats={saveBoats} lineups={lineups} onSaveLineups={saveLineups} favWaters={favWaters} T={T}/>}
         {tab===5&&<RegsAlerts T={T}/>}
         {tab===6&&<History outings={outings} onSave={saveOutings} T={T}/>}
+        {tab===7&&<SettingsTab hasApiKey={hasApiKey} onSaveKey={saveApiKey} T={T}/>}
       </div>
       </div>
       <PrintOverlay data={printJob} onDone={()=>setPrintJob(null)}/>
@@ -2373,6 +2385,63 @@ function History({outings,onSave,T}){
   );
 }
 
+// ── Settings — bring-your-own Anthropic API key for standalone deployments ──
+function SettingsTab({hasApiKey,onSaveKey,T}){
+  const [keyInput,setKeyInput]=useState('');
+  const [showKey,setShowKey]=useState(false);
+  const [saved,setSaved]=useState(false);
+
+  const handleSave=()=>{
+    if(!keyInput.trim()) return;
+    onSaveKey(keyInput.trim());
+    setKeyInput('');
+    setSaved(true);
+    setTimeout(()=>setSaved(false),2500);
+  };
+  const handleClear=()=>{
+    onSaveKey('');
+    setSaved(false);
+  };
+
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:14}}>
+      <div style={cardOf(T)}>
+        <SectionHead T={T}>Anthropic API Key</SectionHead>
+        <div style={{fontSize:13,color:T.text,marginBottom:8,lineHeight:1.6,fontFamily:F}}>
+          AI Guide, Trip Planner, and photo analysis need your own Anthropic API key to work on this standalone site. Your key is stored only in your browser (and synced to your account if signed in) — it's sent per-request to this site's own server proxy, never baked into the deployed code, and no one else's browser ever sees it.
+        </div>
+        <div style={{fontSize:12,color:T.sub,marginBottom:14,fontFamily:F}}>
+          Don't have one? Get a key at <a href="https://console.anthropic.com" target="_blank" rel="noopener noreferrer" style={{color:T.accent}}>console.anthropic.com</a> — set a spending limit there too, since usage on your key is billed to your Anthropic account.
+        </div>
+
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+          <span style={{fontSize:12,color:T.sub,fontFamily:F}}>Status:</span>
+          {hasApiKey
+            ? <span style={{fontSize:12,color:T.accent,fontFamily:F,fontWeight:'600'}}>🤖 Key set — AI features ready</span>
+            : <span style={{fontSize:12,color:T.err,fontFamily:F,fontWeight:'600'}}>⚠ No key set yet</span>
+          }
+        </div>
+
+        <div style={{display:'flex',gap:8}}>
+          <input
+            type={showKey?'text':'password'}
+            placeholder="sk-ant-…"
+            value={keyInput}
+            onChange={e=>setKeyInput(e.target.value)}
+            onKeyDown={e=>e.key==='Enter'&&handleSave()}
+            style={{...inpOf(T),flex:1,fontFamily:'monospace'}}
+          />
+          <button onClick={()=>setShowKey(!showKey)} style={{...btnOf(T,'ghost'),padding:'8px 12px',fontSize:12}}>{showKey?'Hide':'Show'}</button>
+        </div>
+        <div style={{display:'flex',gap:8,marginTop:10}}>
+          <button onClick={handleSave} disabled={!keyInput.trim()} style={{...btnOf(T,'green'),flex:1,opacity:keyInput.trim()?1:0.5}}>{saved?'✓ Saved':'Save Key'}</button>
+          {hasApiKey&&<button onClick={handleClear} style={{...btnOf(T,'ghost'),color:T.err,borderColor:`${T.err}44`}}>Remove Key</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Sign-in screen (shown when Firebase is configured and not yet signed in) ──
 function SignInScreen({onSignIn,error,busy}){
   const [email,setEmail]=useState('');
@@ -2397,11 +2466,6 @@ function SignInScreen({onSignIn,error,busy}){
         <div style={{fontSize:11,color:T.sub,marginTop:16,textAlign:'center',lineHeight:1.6}}>
           Ask whoever set this up to create your account — there's no public sign-up here on purpose.
         </div>
-        {!isAnthropicConfigured()&&(
-          <div style={{fontSize:11,color:T.err,marginTop:12,textAlign:'center',lineHeight:1.6,padding:10,background:`${T.err}14`,borderRadius:8}}>
-            ⚠ No Anthropic API key detected for this deployment. AI Guide, Trip Planner, and photo analysis won't work until <code>VITE_ANTHROPIC_API_KEY</code> is set at build time.
-          </div>
-        )}
       </div>
     </div>
   );
@@ -2495,37 +2559,40 @@ never be read or written by anyone else's account.
 SETUP NOTES — Anthropic API key (required for standalone deployment)
 
 Inside a published Claude.ai artifact, no key is needed — calls are proxied
-automatically. Deployed standalone (your own Vite project, your own domain),
-the browser needs a real key, injected at build time as a global constant
-(NOT via import.meta.env — this file must stay parseable as a plain script
-for the Claude.ai artifact runtime, and import.meta is a syntax error there.
-Note: even mentioning certain build-tool import syntax in this comment block
-can trip the artifact's dependency scanner, so the example below is written
-as plain description rather than copy-pasteable module syntax on purpose):
+automatically. Deployed standalone, this project uses a bring-your-own-key
+model instead of a single site-wide key: each visitor enters their own
+Anthropic key in the Settings tab, stored only in their browser (synced to
+their account if signed in). No key of any kind lives in this file or in
+any build-time environment variable — nothing to inject, nothing that ships
+to every visitor's browser.
 
-1. Get a key at console.anthropic.com.
-2. In your own Vite project (NOT this file), create .env.local (never commit
-   this file) with:
-     VITE_ANTHROPIC_API_KEY=sk-ant-your-real-key-here
-3. In your Vite project's config file, add a `define` block that maps that
-   env var onto the global identifier this file actually reads at runtime,
-   __ANTHROPIC_API_KEY__. Structure needed (search "vite define env variable"
-   for the exact current syntax, since it's a two-line addition to Vite's
-   standard config-function pattern):
-     - load the mode's env vars (Vite's own env-loading helper)
-     - return a config object with a top-level `define` key
-     - inside `define`, set __ANTHROPIC_API_KEY__ to the JSON-stringified
-       value of VITE_ANTHROPIC_API_KEY from the loaded env
-4. On your host (Vercel/Netlify/etc), set VITE_ANTHROPIC_API_KEY in the
-   project's dashboard environment variables — .env.local itself never
-   gets deployed, but the host needs the same value at its own build step.
-5. Rebuild/redeploy. The header's "🤖 AI Ready" / "⚠ No AI Key" badge tells
-   you at a glance whether it's wired up correctly.
+What actually makes a request work, in order:
+1. The visitor pastes their key into Settings — it's saved locally (and to
+   their Firestore account data if signed in), never sent anywhere except
+   step 3 below, per-request.
+2. This file calls POST /api/claude (a same-origin path, not Anthropic's API
+   directly) with that key in an x-api-key header.
+3. A serverless function at api/claude.js (must live at that exact path —
+   Vercel only auto-detects functions inside a top-level /api folder) reads
+   that header, forwards the request to api.anthropic.com server-side with
+   the correct anthropic-version header, and relays the response back.
 
-Real tradeoff worth knowing: this key is visible in your deployed site's
-browser bundle to anyone who opens dev tools — the sign-in wall keeps casual
-visitors out, but isn't airtight security. A spending limit on your
-Anthropic account (console.anthropic.com > billing) is the simplest hedge.
+To deploy this correctly:
+1. Confirm api/claude.js exists at your project ROOT (sibling to package.json
+   and src/, not inside src/) — Vercel's file-based routing requires this
+   exact location to detect it as a serverless function at all. A copy
+   sitting anywhere else (e.g. loose at the root, or inside src/) will not
+   be deployed as a function and every AI request will fail.
+2. Deploy normally — Vercel picks up /api functions automatically, no extra
+   config needed for this part.
+3. Each visitor (including you) opens the Settings tab and pastes their own
+   key from console.anthropic.com. The header's "🤖 AI Ready" / "⚠ No AI Key"
+   badge reflects that visitor's own key status, not a site-wide setting.
+
+Real tradeoff worth knowing: usage is billed to whichever visitor's key is
+in use — you are not paying for other people's usage, and they aren't
+paying for yours. Each person should set a spending limit on their own
+Anthropic account (console.anthropic.com > billing).
 ────────────────────────────────────────────────────────────────────────────
 
 SETUP NOTES — Brand assets (logo, favicon)
