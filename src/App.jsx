@@ -57,6 +57,26 @@ async function fbSignIn(email, password){
     throw new Error(e.message.includes('Failed to fetch') ? 'Network error — check your connection.' : e.message);
   }
 }
+// Shared invite gate — NOT real security. This string ships in the browser
+// bundle and anyone who opens dev tools can read it. It's a soft filter to
+// keep casual/accidental signups out, not a defense against a determined
+// person. Fine for "give this to friends I trust," not fine for anything
+// where an actual bad actor is a real concern.
+const INVITE_CODE = 'knucklebuster';
+async function fbSignUp(email, password){
+  try{
+    const r = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseConfig.apiKey}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email, password, returnSecureToken:true }),
+    });
+    const d = await r.json();
+    if(d.error) throw new Error(d.error.message==='EMAIL_EXISTS' ? 'An account with that email already exists — try signing in instead.' : d.error.message==='WEAK_PASSWORD' ? 'Password must be at least 6 characters.' : d.error.message==='INVALID_EMAIL' ? 'That email address looks invalid.' : (d.error.message||'Could not create account'));
+    fbTokens = { idToken:d.idToken, refreshToken:d.refreshToken, expiresAt:Date.now()+Number(d.expiresIn)*1000, uid:d.localId, email:d.email };
+    return {uid:fbTokens.uid, email:fbTokens.email};
+  }catch(e){
+    throw new Error(e.message.includes('Failed to fetch') ? 'Network error — check your connection.' : e.message);
+  }
+}
 async function fbRefresh(refreshToken){
   try{
     const r = await fetch(`https://securetoken.googleapis.com/v1/token?key=${firebaseConfig.apiKey}`, {
@@ -88,6 +108,29 @@ async function fbGetToken(){
   return null;
 }
 function fbSignOut(){ fbTokens = null; }
+async function fbChangePassword(newPassword){
+  const idToken = await fbGetToken();
+  if(!idToken) throw new Error('Session expired — please sign in again.');
+  const r = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:update?key=${firebaseConfig.apiKey}`,{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ idToken, password:newPassword, returnSecureToken:true }),
+  });
+  const d = await r.json();
+  if(d.error) throw new Error(d.error.message==='WEAK_PASSWORD' ? 'Password must be at least 6 characters.' : (d.error.message||'Could not change password'));
+  fbTokens = { ...fbTokens, idToken:d.idToken, refreshToken:d.refreshToken, expiresAt:Date.now()+Number(d.expiresIn)*1000 };
+  return true;
+}
+async function fbDeleteAccount(){
+  const idToken = await fbGetToken();
+  if(!idToken) throw new Error('Session expired — please sign in again.');
+  const r = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:delete?key=${firebaseConfig.apiKey}`,{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ idToken }),
+  });
+  const d = await r.json();
+  if(d.error) throw new Error(d.error.message||'Could not delete account');
+  return true;
+}
 
 // Dedicated cache for the refresh token — deliberately bypasses the main
 // stor/load/save layer (which routes to Firestore once signed in). This must
@@ -209,7 +252,7 @@ function BrandMark({T,size=34}){
 }
 
 // ── Constants ───────────────────────────────────────────────────────────────
-const TABS = ["AI Guide","Dashboard","My Waters","Log","Gear","Regs","History","Settings"];
+const TABS = ["AI Guide","Dashboard","My Waters","Log","Gear","Regs","History","Account"];
 const SPECIES = ["Chinook (King)","Coho (Silver)","Pink (Humpy)","Chum (Dog)","Sockeye (Red)",
   "Kokanee","Steelhead","Sea-run Cutthroat","Trout (Resident)","Largemouth Bass","Smallmouth Bass","Other"];
 const TECHNIQUES = ["Trolling","Mooching","Jigging","Drift Fishing","Casting – Spoon",
@@ -277,7 +320,11 @@ const WX = {
 // aliases (bays/points/heads) are sourced from those pages, not guessed from general geography.
 const MARINE_AREAS = [
   {num:'1',   title:'Marine Area 1 - Ilwaco',                                    slug:'ilwaco',          lat:46.305, lng:-124.034, aliases:['ilwaco']},
-  {num:'2',   title:'Marine Area 2 - Westport-Ocean Shores',                     slug:'westport-ocean-shores', lat:46.876, lng:-124.114, aliases:['westport','ocean shores']},
+  {num:'2',   title:'Marine Area 2 - Westport-Ocean Shores',                     slug:'westport-ocean-shores', lat:46.876, lng:-124.114,
+    // WDFW's own regulation text: "Area 2 excludes waters of Willapa Bay and
+    // Grays Harbor" — those are separate areas (2-1, 2-2) with separate rules,
+    // despite sitting right next to MA2 geographically. Don't conflate them.
+    aliases:['westport','ocean shores']},
   {num:'2-1', title:'Marine Area 2-1 - Willapa Bay',                             slug:'willapa-bay',     lat:46.650, lng:-123.850, aliases:['willapa bay','willapa']},
   {num:'2-2', title:'Marine Area 2-2 - Grays Harbor',                            slug:'grays-harbor',    lat:46.950, lng:-124.050, aliases:['grays harbor']},
   {num:'3',   title:'Marine Area 3 - La Push',                                   slug:'lapush',          lat:47.913, lng:-124.636, aliases:['la push','lapush']},
@@ -285,6 +332,15 @@ const MARINE_AREAS = [
   {num:'5',   title:'Marine Area 5 - Sekiu and Pillar Point',                    slug:'sekiu-pillar-point', lat:48.272, lng:-124.343, aliases:['sekiu','pillar point']},
   {num:'6',   title:'Marine Area 6 - East Juan de Fuca Strait',                  slug:'east-juan-de-fuca-strait', lat:48.170, lng:-123.550, aliases:['east juan de fuca','freshwater bay']},
   {num:'7',   title:'Marine Area 7 - San Juan Islands',                         slug:'san-juan-islands', lat:48.638, lng:-122.857,
+    // Multiple genuinely separate islands, most only reachable from each
+    // other by boat — never imply proximity between different islands here:
+    //   San Juan Island: friday harbor, haro strait (west side)
+    //   Lopez Island, Orcas Island, Shaw Island, Stuart Island, Sucia Island,
+    //     Waldron Island: each a distinct island
+    //   Mainland-adjacent (technically part of MA7 but on the mainland, not
+    //     an island): bellingham bay, blaine, drayton harbor, point roberts,
+    //     lummi island, cypress island, anacortes — these are near each
+    //     other and near the mainland, but still distinct from the islands above
     aliases:['san juan islands','san juans','friday harbor','hein bank','bellingham bay','haro strait',
       'lopez island','orcas island','shaw island','stuart island','sucia island','waldron island',
       'blaine','drayton harbor','point roberts','lummi island','cypress island','anacortes']},
@@ -295,20 +351,58 @@ const MARINE_AREAS = [
     aliases:['port susan','ports susan','gardner bay','hat island','camano head','tulalip','mukilteo',
       'everett','kayak point','clinton','langley']},
   {num:'9',   title:'Marine Area 9 - Admiralty Inlet',                           slug:'admiralty-inlet', lat:48.012, lng:-122.559,
+    // MA9 spans BOTH shores of Admiralty Inlet — do not treat these as
+    // interchangeable, they're miles apart with different access/logistics:
+    //   Port Townsend / Marrowstone side: Mid-Channel Bank (between Point
+    //     Wilson and Marrowstone Point specifically, per WDFW), Point Wilson,
+    //     Marrowstone Point
+    //   Whidbey Island side: Bush Point (Freeland), Lagoon Point, Possession
+    //     Bar (south end)
+    //   Kitsap Peninsula side: Skunk Bay, Pilot Point, Craven Rock
     aliases:['admiralty inlet','port townsend','point no point','pilot point','possession bar',
-      'skunk bay','craven rock','mid-channel bank','marrowstone point']},
+      'skunk bay','craven rock','mid-channel bank','mid channel bank','marrowstone point',
+      'bush point','lagoon point']},
   {num:'10',  title:'Marine Area 10 - Seattle-Bremerton Area',                   slug:'seattle-bremerton-area', lat:47.628, lng:-122.547,
+    // Opposite shores of Puget Sound, connected only by ferry — not close:
+    //   Seattle side: Elliott Bay, Alki, Shilshole, West Point, Lincoln Park,
+    //     Richmond Beach, Jefferson Head
+    //   Kitsap/Bainbridge side: Sinclair Inlet, Southworth, Blake Island,
+    //     Allen Bank, Murden Cove, Yeomalt Point, Point Monroe, Skiff Point, Kingston
     aliases:['seattle','bremerton','elliott bay','elliot bay','alki','shilshole','sinclair inlet',
       'brace point','jefferson head','jeff head','lincoln park','west point','southworth','blake island',
       'allen bank','murden cove','yeomalt point','point monroe','skiff point','richmond beach','kingston']},
   {num:'11',  title:'Marine Area 11 - Tacoma-Vashon Island',                     slug:'tacoma-vashon-island', lat:47.368, lng:-122.442,
+    // Three genuinely separate landmasses — mainland, island, and peninsula:
+    //   Tacoma mainland: Point Defiance, Browns Point, Dash Point, Des Moines,
+    //     Owen Beach, Clay Banks
+    //   Vashon/Maury Island (accessible by ferry, not drivable from mainland):
+    //     Vashon, Maury Island, Quartermaster (Harbor), Point Robinson
+    //   Kitsap Peninsula side: Gig Harbor (Colvos Passage and Dalco Passage
+    //     are the water between these landmasses, not a shore themselves)
     aliases:['tacoma','vashon island','vashon','point defiance','dalco passage','gig harbor','browns point',
       'dash point','des moines','maury island','quartermaster','point robinson','clay banks','owen beach',
       'colvos passage']},
   {num:'12',  title:'Marine Area 12 - Hood Canal',                               slug:'hood-canal',      lat:47.620, lng:-122.950,
+    // A long, narrow canal — south end and north end are many miles apart:
+    //   South end (near Belfair): belfair, twanoh, potlatch, hoodsport,
+    //     ayock point
+    //   North end (near Quilcene, ~30+ miles north): quilcene, dabob bay,
+    //     pleasant harbor
+    //   Also see AMBIGUOUS_RIVER_MARINE_NAMES below — dosewallips and
+    //     duckabush name BOTH a river AND a Hood Canal shoreline spot.
     aliases:['hood canal','quilcene','dabob bay','belfair','dosewallips','duckabush','hoodsport',
       'pleasant harbor','twanoh','potlatch','ayock point']},
   {num:'13',  title:'Marine Area 13 - South Puget Sound',                        slug:'south-puget-sound', lat:47.240, lng:-122.831,
+    // The most fragmented marine area — many distinct inlets, peninsulas, and
+    // islands, none of which are close to each other despite sharing MA13:
+    //   Budd Inlet (Olympia): olympia, budd inlet
+    //   Case Inlet (west side, toward Key Peninsula): case inlet, allyn,
+    //     key peninsula, harstine island
+    //   Carr Inlet (east side, toward Fox Island): carr inlet, fox island,
+    //     kopachuck, penrose point
+    //   Nisqually Reach / Anderson Island area: nisqually reach, anderson
+    //     island, tolmie, steilacoom
+    //   Totten/Eld/Squaxin area (far south/west): shelton, squaxin, fish trap
     aliases:['south puget sound','south sound','olympia','budd inlet','case inlet','carr inlet',
       'nisqually reach','steilacoom','shelton','fish trap','joemma beach','penrose point','kopachuck',
       'tolmie','anderson island','fox island','allyn','key peninsula','harstine island','squaxin']},
@@ -358,13 +452,25 @@ function inferWaterType(str) {
     "dyes","liberty bay","port orchard","possession","juan de fuca","rosario",
     "bellingham","padilla","fidalgo","tulalip","hammersley","totten","eld","budd","henderson"
   ].some(k=>s.includes(k))) return "Saltwater";
+  // GENERIC NAME WARNING — "cedar" is a confirmed case of a name that repeats
+  // across entirely unrelated western WA water bodies. Verified via WDFW and
+  // King County sources: Cedar RIVER (King County, the well-known Lake
+  // Washington/sockeye tributary) is distinct from Cedar CREEK in King County
+  // (near Maple Valley/Ravensdale), Cedar Creek in Clark County (WDFW water
+  // access site, tributary to the North Fork Lewis), and Cedar Creek in
+  // Jefferson County (WDFW regulation filing, near Olympic National Park) —
+  // four separate water bodies, same name. This module can't disambiguate
+  // which one a bare "cedar" refers to; it only tags a general water TYPE.
+  // See the AI system prompt's GENERIC NAME COLLISIONS section for how the
+  // AI Guide is instructed to handle this (ask which county/area, don't guess).
   if (["snoqualmie","skykomish","skagit","nooksack",
     "stillaguamish","puyallup","green river","cedar","carbon","cowlitz","chehalis","hoh",
     "sol duc","quinault","dosewallips","duckabush","skokomish","dungeness","elwha","methow",
-    "wenatchee","columbia","yakima","klickitat"
+    "wenatchee","columbia","yakima","klickitat","snohomish","duwamish","willapa"
   ].some(k=>s.includes(k))) return "River / Stream";
   if (["sammamish","washington","union","chelan","roosevelt",
-    "banks","moses","potholes","kapowsin","tapps","serene","goodwin"
+    "banks","moses","potholes","kapowsin","tapps","serene","goodwin",
+    "salmon bay","ship canal","lake washington ship canal"
   ].some(k=>s.includes(k))) return "Lake";
   return "";
 }
@@ -372,11 +478,55 @@ function inferWaterType(str) {
 // area/bay it empties into — used to surface a disambiguation note in the UI
 // rather than silently guessing. Also flags waters where regulations commonly
 // differ between the tidal/mouth section and the upper freshwater section.
-const AMBIGUOUS_RIVER_MARINE_NAMES = ['dosewallips','duckabush','skokomish','elwha','nisqually','quilcene','dungeness','hoh','deschutes'];
+// Verified against WDFW sources — major western WA rivers whose name is
+// identical to (or the obvious root of) the bay/harbor they empty into.
+const AMBIGUOUS_RIVER_MARINE_NAMES = ['dosewallips','duckabush','skokomish','elwha','nisqually','quilcene','dungeness','hoh','deschutes',
+  'chehalis','skagit','snohomish','puyallup','nooksack','duwamish','willapa'];
 function isAmbiguousWaterName(str){
   const s=(str||'').toLowerCase();
   return AMBIGUOUS_RIVER_MARINE_NAMES.some(n=>s.includes(n));
 }
+
+// ── Named-lake collision database — STARTER SET, statewide, not exhaustive ──
+// WDFW itself says "thousands of lowland lakes" exist statewide; this is a
+// verified but partial set of the names most likely to collide (confirmed via
+// WDFW's own per-lake pages, which append county to the title specifically
+// because these names repeat so often — e.g. "Clear Lake (Skagit County)").
+// PURPOSE: not to be a comprehensive gazetteer, but to catch the highest-risk
+// generic names and force a "which one?" question instead of a silent guess.
+// TO EXPAND THIS DATASET (future work, likely via Claude Code, not by hand
+// here): WDFW's Lowland Lakes and High Lakes finder tools are backed by a
+// real database (each lake has a "Geo Code" like L4096) — pulling that
+// dataset directly (or the USGS/GNIS national names database, filtered to
+// WA) would let this list grow from dozens to the full statewide set without
+// changing any of the matching logic below, only this array.
+const WA_NAMED_LAKES = [
+  // Summit Lake — verified western WA: Thurston, Pierce, Snohomish; eastern WA: Stevens, Okanogan, Ferry
+  {name:'Summit Lake',county:'Thurston'},{name:'Summit Lake',county:'Pierce'},{name:'Summit Lake',county:'Snohomish'},
+  {name:'Summit Lake',county:'Stevens'},{name:'Summit Lake',county:'Okanogan'},{name:'Summit Lake',county:'Ferry'},
+  // Clear Lake — verified western WA: Skagit (has more than one — flag for manual follow-up), Thurston, Pierce, Skamania; central/eastern: Chelan, Yakima, Spokane
+  {name:'Clear Lake',county:'Skagit'},{name:'Clear Lake',county:'Thurston'},{name:'Clear Lake',county:'Pierce'},
+  {name:'Clear Lake',county:'Skamania'},{name:'Clear Lake',county:'Chelan'},{name:'Clear Lake',county:'Yakima'},
+  {name:'Clear Lake',county:'Spokane'},
+  // Blue Lake — mostly eastern WA (Grant, two distinct in Okanogan, Columbia); one confirmed western: Lewis
+  {name:'Blue Lake',county:'Lewis'},{name:'Blue Lake',county:'Grant'},{name:'Blue Lake',county:'Okanogan'},
+  {name:'Blue Lake',county:'Columbia'},
+  // Long Lake — verified western WA: Thurston, Kitsap, Lewis, Clallam; eastern: Grant, Ferry, Okanogan, Lincoln/Spokane/Stevens (aka Lake Spokane)
+  {name:'Long Lake',county:'Thurston'},{name:'Long Lake',county:'Kitsap'},{name:'Long Lake',county:'Lewis'},
+  {name:'Long Lake',county:'Clallam'},{name:'Long Lake',county:'Grant'},{name:'Long Lake',county:'Ferry'},
+  {name:'Long Lake',county:'Okanogan'},{name:'Long Lake',county:'Spokane'},
+  // Cedar — River (King, the Lake Washington tributary) vs three unrelated Creeks
+  {name:'Cedar River',county:'King'},{name:'Cedar Creek',county:'King'},{name:'Cedar Creek',county:'Clark'},{name:'Cedar Creek',county:'Jefferson'},
+];
+// Returns all matching entries for a typed name — 0 (no known collision),
+// 1 (unambiguous within this starter set — not a guarantee there's truly
+// only one statewide), or 2+ (genuine collision, ask which county).
+function findLakeMatches(input){
+  const s=(input||'').toLowerCase().trim();
+  if(!s) return [];
+  return WA_NAMED_LAKES.filter(l=>s.includes(l.name.toLowerCase()) || l.name.toLowerCase().includes(s));
+}
+
 function nearestNOAA(lat,lng) {
   return NOAA_STA.reduce((b,s)=>{const d=Math.hypot(s.lat-lat,s.lng-lng);return d<b.d?{s,d}:b},{s:NOAA_STA[0],d:Infinity}).s;
 }
@@ -745,8 +895,8 @@ function BlackmouthApp({syncStatus,onSignOut,userEmail}){
               {syncStatus==='synced'&&<span title="Synced to your account" style={{fontSize:10,color:T.accent,fontFamily:F}}>☁ Synced</span>}
               {syncStatus==='local'&&<span title="Saved to this Claude account only" style={{fontSize:10,color:T.sub,fontFamily:F}}>📱 Local only</span>}
               {hasApiKey
-                ? <span title="AI Guide is connected and ready" style={{fontSize:10,color:T.accent,fontFamily:F}}>🤖 AI Ready</span>
-                : <span onClick={()=>setTab(7)} title="No Anthropic API key set — tap to add yours in Settings" style={{fontSize:10,color:T.err,fontFamily:F,cursor:'pointer',textDecoration:'underline'}}>⚠ No AI Key</span>
+                ? <span title="AI Guide is connected and ready" style={{fontSize:12,color:'#fff',background:T.accent,padding:'4px 10px',borderRadius:20,fontWeight:'700',fontFamily:F,whiteSpace:'nowrap'}}>🤖 AI Ready</span>
+                : <span onClick={()=>setTab(7)} title="No Anthropic API key set — tap to add yours in Account" style={{fontSize:12,color:'#fff',background:T.err,padding:'4px 10px',borderRadius:20,fontWeight:'700',fontFamily:F,cursor:'pointer',whiteSpace:'nowrap'}}>⚠ No AI Key</span>
               }
               <button onClick={toggleDark} style={{...btnOf(T,'ghost'),padding:'5px 11px',fontSize:12}}>{dark?'☀️ Light':'🌑 Dark'}</button>
             </div>
@@ -780,7 +930,7 @@ function BlackmouthApp({syncStatus,onSignOut,userEmail}){
         {tab===4&&<GearManager gear={gear} onSave={saveGear} configs={configs} onSaveConfigs={saveConfigs} boats={boats} onSaveBoats={saveBoats} lineups={lineups} onSaveLineups={saveLineups} favWaters={favWaters} T={T}/>}
         {tab===5&&<RegsAlerts T={T}/>}
         {tab===6&&<History outings={outings} onSave={saveOutings} T={T}/>}
-        {tab===7&&<SettingsTab hasApiKey={hasApiKey} onSaveKey={saveApiKey} T={T}/>}
+        {tab===7&&<AccountTab hasApiKey={hasApiKey} onSaveKey={saveApiKey} userEmail={userEmail} onSignOut={onSignOut} allData={{outings,gear,configs,boats,lineups,favWaters}} T={T}/>}
       </div>
       </div>
       <PrintOverlay data={printJob} onDone={()=>setPrintJob(null)}/>
@@ -836,6 +986,43 @@ function TideCurve({tides,T}){
   );
 }
 
+// ── Rule-based tide→bait rationale — terse, newspaper-forecast style. No API
+// call, no cost, instant. Combines current tide phase + rough light band +
+// this month's dominant forage (FORAGE_CALENDAR) into one short sentence.
+function tideBaitForecast(todayTides, forageEntry){
+  if(!todayTides||todayTides.length<2) return null;
+  const toMinutes=t=>{ const m=t.match(/(\d+):(\d+)\s*(AM|PM)?/i); if(!m) return null; let h=parseInt(m[1]),mi=parseInt(m[2]); if(m[3]){ if(/PM/i.test(m[3])&&h!==12) h+=12; if(/AM/i.test(m[3])&&h===12) h=0; } return h*60+mi; };
+  const now=new Date(); const nowMin=now.getHours()*60+now.getMinutes();
+  const pts=todayTides.map(p=>({min:toMinutes(p.t.split(' ')[1]||p.t),type:p.type})).filter(p=>p.min!=null).sort((a,b)=>a.min-b.min);
+  if(pts.length<2) return null;
+
+  // Find the tide points bracketing right now to determine flood/ebb/slack
+  let prev=null,next=null;
+  for(let i=0;i<pts.length;i++){ if(pts[i].min<=nowMin) prev=pts[i]; if(pts[i].min>nowMin && !next) next=pts[i]; }
+  if(!next) next=pts[0]; if(!prev) prev=pts[pts.length-1];
+  const minsToNext = next.min>nowMin ? next.min-nowMin : (1440-nowMin)+next.min;
+  const phase = minsToNext<=25 ? 'slack' : (next.type==='H' ? 'flooding' : 'ebbing');
+
+  const light = nowMin<300 ? 'night' : nowMin<420 ? 'first light' : nowMin<540 ? 'morning' : nowMin<960 ? 'midday' : nowMin<1140 ? 'dusk' : 'night';
+
+  const forage = forageEntry?.forage?.split(' (')[0]?.split(' + ')[0] || 'bait';
+
+  // Terse, rule-based combinations — a handful of solid PNW patterns, not an exhaustive model
+  if(phase==='flooding' && (light==='first light'||light==='dusk')){
+    return `Flood tide meets ${light} — ${forage.toLowerCase()} pushed onto the flats. Bite window likely within the hour either side of the turn.`;
+  }
+  if(phase==='flooding'){
+    return `Incoming tide, ${light} — bait moving with the current. Fishable, but the low-light turn windows usually outfish flat midday flood.`;
+  }
+  if(phase==='ebbing' && (light==='first light'||light==='dusk')){
+    return `Ebb tide at ${light} — bait draining off the flats toward deeper water. Follow it out; edges and drop-offs worth a look.`;
+  }
+  if(phase==='ebbing'){
+    return `Outgoing tide, ${light} — current pulling bait toward channels. Expect more scattered activity than a low-light exchange.`;
+  }
+  return `Near slack water, ${light} — minimal current means less bait movement. Often the slower part of the cycle; the turn coming up is worth timing for.`;
+}
+
 function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick,onTabChange,T}){
   const [portInput,setPI] = useState('');
   const [geocoding,setGeo] = useState(false);
@@ -871,6 +1058,9 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
     const d=new Date(p.t),now=new Date();
     return d.getDate()===now.getDate()&&d.getMonth()===now.getMonth();
   }).slice(0,4);
+  const [forageOpen,setForageOpen] = useState(false);
+  const currentForage = FORAGE_CALENDAR[new Date().getMonth()];
+  const forecastLine = tideBaitForecast(todayTides, currentForage) || '';
 
   const tipMap={
     Spring:[
@@ -934,9 +1124,9 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
         </div>
       )}
 
-      {/* Weather + Tides */}
+      {/* Weather + Tide/Bait */}
       {(wx||todayTides.length>0)&&(
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+        <div style={{display:'grid',gridTemplateColumns: (wx&&todayTides.length>0) ? '1fr 1fr' : '1fr',gap:10}}>
           {wx&&(
             <div style={cardOf(T)}>
               <div style={{fontSize:10,color:T.sub,letterSpacing:1,textTransform:'uppercase',marginBottom:8,fontFamily:F}}>Weather · {homePort?.name}</div>
@@ -951,16 +1141,30 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
             </div>
           )}
           {todayTides.length>0&&(
-            <div style={cardOf(T)}>
-              <div style={{fontSize:10,color:T.sub,letterSpacing:1,textTransform:'uppercase',marginBottom:8,fontFamily:F}}>Tides · {dailyData?.tides?.station}</div>
+            <div onClick={()=>setForageOpen(!forageOpen)} style={{...cardOf(T),cursor:'pointer',borderLeft:`3px solid ${T.accent}`}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
+                <div style={{fontSize:10,color:T.sub,letterSpacing:1,textTransform:'uppercase',fontFamily:F}}>Tides &amp; Bait · {homePort?.name}</div>
+                <span style={{fontSize:11,color:T.accent,fontFamily:F}}>{forageOpen?'less ▲':'more ▼'}</span>
+              </div>
               <TideCurve tides={todayTides} T={T}/>
-              {todayTides.map((p,i)=>(
-                <div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:13,fontFamily:F,padding:'3px 0',borderBottom:i<todayTides.length-1?`1px solid ${T.border}`:'none'}}>
-                  <span style={{color:p.type==='H'?T.accent:T.sub,fontWeight:'600'}}>{p.type==='H'?'High':'Low'}</span>
-                  <span style={{color:T.text}}>{p.t.split(' ')[1]}</span>
-                  <span style={{color:T.sub}}>{parseFloat(p.v).toFixed(1)} ft</span>
+              <div style={{fontSize:12,color:T.text,lineHeight:1.55,fontFamily:F,marginTop:4}}>{forecastLine}</div>
+
+              {forageOpen&&(
+                <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${T.border}`}}>
+                  {todayTides.map((p,i)=>(
+                    <div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:13,fontFamily:F,padding:'3px 0',borderBottom:i<todayTides.length-1?`1px solid ${T.border}`:'none'}}>
+                      <span style={{color:p.type==='H'?T.accent:T.sub,fontWeight:'600'}}>{p.type==='H'?'High':'Low'}</span>
+                      <span style={{color:T.text}}>{p.t.split(' ')[1]}</span>
+                      <span style={{color:T.sub}}>{parseFloat(p.v).toFixed(1)} ft</span>
+                    </div>
+                  ))}
+                  <div style={{fontSize:10,color:T.dim,marginTop:8,marginBottom:4,fontFamily:F,letterSpacing:1,textTransform:'uppercase'}}>This Month's Forage</div>
+                  <div style={{fontSize:13,color:T.text,fontWeight:'600',fontFamily:F,marginBottom:3}}>{currentForage.forage}</div>
+                  <div style={{fontSize:12,color:T.sub,fontFamily:F,marginBottom:6,lineHeight:1.5}}>{currentForage.detail}</div>
+                  <div style={{fontSize:12,color:T.accent,fontFamily:F,fontStyle:'italic'}}>💡 {currentForage.tip}</div>
+                  <div style={{fontSize:10,color:T.dim,marginTop:8,fontFamily:F}}>Rule-based estimate, not AI-generated — approximate, varies year to year.</div>
                 </div>
-              ))}
+              )}
             </div>
           )}
         </div>
@@ -1013,18 +1217,6 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
             </div>
           ))}
         </div>
-      </div>
-
-      {/* Current Forage */}
-      <div style={{...cardOf(T),borderLeft:`3px solid ${T.accent}`}}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline'}}>
-          <SectionHead T={T}>Current Forage</SectionHead>
-          <span style={{fontSize:10,color:T.dim,fontFamily:F}}>{monthName()}</span>
-        </div>
-        <div style={{fontSize:14,color:T.text,fontWeight:'600',fontFamily:F,marginBottom:4}}>{FORAGE_CALENDAR[new Date().getMonth()].forage}</div>
-        <div style={{fontSize:12,color:T.sub,fontFamily:F,marginBottom:8,lineHeight:1.5}}>{FORAGE_CALENDAR[new Date().getMonth()].detail}</div>
-        <div style={{fontSize:12,color:T.accent,fontFamily:F,fontStyle:'italic'}}>💡 {FORAGE_CALENDAR[new Date().getMonth()].tip}</div>
-        <div style={{fontSize:10,color:T.dim,marginTop:8,fontFamily:F}}>Approximate — varies year to year. Ask the AI Guide for what's locally relevant.</div>
       </div>
 
       {/* Recent outings */}
@@ -1080,6 +1272,20 @@ TROLLING: Downrigger setup, motor mooching hybrids, diver trolling, trolling spe
 SEASONAL PATTERNS: Blackmouth Dec-Apr, spring Chinook May-June (deep, cool water), summer Coho June-Aug, fall Chinook Sept-Oct. You know spring tides push more fish than neap, that peak fishing is one hour before-to-after tide change, that sounder density and thermoclines reveal fish location.
 
 KEY LOCATIONS IN PUGET SOUND: Shilshole Bay, Mukilteo, Richmond Beach (massive pink runs Aug), Ballard Bridge, mid-channel deep structure, Admiralty Inlet spring/fall Chinook, Haro Strait (San Juans), Hood Canal. You know tide rips, kelp beds, drop-offs, rocky structure as fish magnets.
+
+LOCATION PRECISION — DO NOT CONFLATE NEARBY-SOUNDING SPOTS WITHIN THE SAME MARINE AREA: A marine area number covers many miles of shoreline on multiple sides of a body of water — spots within the same numbered area are often NOT close to each other and have completely different access/logistics. Getting this wrong sends someone to the wrong shore. Known cases, verified: MA9 (Admiralty Inlet) — Mid-Channel Bank sits specifically between Point Wilson and Marrowstone Point (Port Townsend/Marrowstone side, per WDFW's own site), while Bush Point and Lagoon Point are shore spots on Whidbey Island, the opposite shore, several miles away. MA10 (Seattle-Bremerton) — Seattle-side spots (Alki, Shilshole, West Point, Richmond Beach) and Kitsap/Bainbridge-side spots (Sinclair Inlet, Southworth, Blake Island, Kingston) are on opposite shores of the Sound, ferry-connected only. MA11 (Tacoma-Vashon) — Tacoma mainland (Point Defiance, Browns Point, Des Moines), Vashon/Maury Island (ferry-only access), and Gig Harbor (Kitsap Peninsula) are three separate landmasses. MA12 (Hood Canal) — Belfair (south end) and Quilcene/Dabob Bay (north end) are 30+ miles apart along the same canal. MA13 (South Puget Sound) — Budd Inlet/Olympia, Case Inlet, Carr Inlet, Nisqually Reach, and the Totten/Squaxin area are distinct inlets, none close to each other. MA7 (San Juan Islands) — San Juan, Lopez, Orcas, Shaw, Stuart, Sucia, and Waldron are separate islands, mostly boat-access-only between each other. Never use spots within these areas interchangeably or imply proximity without checking. General rule for ANY spot you mention, even ones not listed here: state which specific shore/side/island it's on rather than just the marine area number, especially for boat launch or shore-access recommendations — a marine area number alone is not precise enough to act on.
+
+BALLARD LOCKS / LAKE WASHINGTON SHIP CANAL — a fresh/salt convergence chain, verified via WDFW and USGS sources, that gets conflated constantly and has real rule differences at each link: Shilshole Bay (Puget Sound, saltwater, MA10 marine-area rules) → Hiram M. Chittenden ("Ballard") Locks, an abrupt physical barrier — saltwater on the Shilshole side, freshwater on the inland side → Salmon Bay (freshwater, despite the name) → Lake Washington Ship Canal → Lake Union → Montlake Cut → Lake Washington (freshwater lake rules — open year-round, but with specific zone closures near the floating bridges and size limits protecting juvenile steelhead) → from there, Cedar River (south end, near Renton — heavily protected sockeye spawning grounds, frequently closed or very restricted, do not casually suggest fishing it) and Sammamish River/Lake Sammamish (north end, via Kenmore — a separate lake with its own rules). Chinook and coho headed for Issaquah Creek and sockeye headed for the Cedar River both pass through the Locks' fish ladder — the salmon counts WDFW uses to set Lake Washington fishing seasons are literally counted at the Locks. When someone mentions fishing "the ship canal," "the locks," "Salmon Bay," "Lake Union," or "Lake Washington," these are NOT interchangeable — confirm which specific link in this chain they mean, since the rules differ meaningfully at each one.
+
+RIVER REGULATIONS ARE OFTEN SEGMENT-SPECIFIC, NOT RIVER-WIDE: WDFW frequently regulates a single river differently along different stretches, defined by specific bridges, confluences, or other fixed landmarks — not by mile markers or anything a GPS gives you directly. Verified example: the Chehalis River alone has at least three separately-regulated segments (mouth to Fuller Bridge; Fuller Bridge to South Elma Bridge; South Elma Bridge to the confluence with the Black River), each with different rules. Never state a blanket rule for "the [river name]" as if it applies river-wide unless you've actually confirmed that via search — ask or clarify which stretch (near the mouth? near a specific bridge or landmark? above or below a specific confluence?) before giving a specific answer, and default to citing the general area/nearest landmark rather than implying uniformity.
+
+MARINE AREA BOUNDARIES ARE PRECISE LEGAL LINES, NOT ROUGH GEOGRAPHY — two more verified traps: (1) "Marine Area 2" (Westport-Ocean Shores, open coast) LEGALLY EXCLUDES Willapa Bay and Grays Harbor even though they sit right there geographically — those bays are their own separate areas, MA2-1 and MA2-2, with their own separate rules. Someone saying "Marine Area 2" who actually means one of the bays will get the wrong regulations if you take the area number at face value. (2) Deception Pass itself is entirely within MA8-1 (the boundary runs "West Point to Reservation Head eastward through Deception Pass," per WDFW's official definition) — the pass is NOT split between two areas — but MA7 (San Juan Islands) begins immediately adjacent, just north/west of the pass, so a boat working the pass and drifting slightly can cross into different rules quickly. General principle: WDFW defines marine area boundaries as precise point-to-point lines between named landmarks (lighthouses, buoys, specific points), not rough circles or "roughly here." Near any boundary, don't guess based on general geography — search for the specific boundary line definition, or tell the person to verify rather than stating a boundary with false confidence.
+
+GENERIC NAME COLLISIONS — the same water name repeats across unrelated western WA watersheds, and this is a distinct failure mode from the marine-area cases above, since it's freshwater-only and doesn't involve a marine area matching system at all. CONFIRMED via WDFW and King County sources (highest confidence — cite these facts freely): "Cedar" alone refers to at least FOUR separate, unrelated water bodies in western WA — Cedar RIVER in King County (the well-known Lake Washington sockeye tributary), plus three entirely different Cedar CREEKs in King County (near Maple Valley), Clark County (tributary to the North Fork Lewis River), and Jefferson County (near Olympic National Park). Giving advice about "Cedar Creek" or even "the Cedar" without confirming which one risks handing someone completely wrong regulations or directions.
+
+LAKES ARE WORSE THAN CREEKS FOR THIS — confirmed directly on WDFW's own site, which maintains separate individual pages per lake with the county appended in the title itself (e.g., "Summit Lake (Thurston County)"), because these names collide so often: "Summit Lake" has at least three distinct western-WA instances — Thurston County (a popular drive-up lowland lake, kokanee and bass), Pierce County (a 2.5-mile hike-in alpine lake near Mt. Rainier with small brook trout), and Snohomish County (another high lake) — completely different fisheries and completely different access (one is a boat-ramp drive-up, another requires a multi-mile hike). "Clear Lake" is even more extreme: at least four distinct western-WA instances (Skagit, Thurston, Pierce, Skamania counties), and a fishing-access source states outright that Skagit County alone has more than one "Clear Lake" — meaning county-level disambiguation, WDFW's own standard convention, is SOMETIMES INSUFFICIENT on its own. For lakes with a generic name (Summit, Clear, Blue, Long, Deer, Silver, Twin, Mud, Fish, Trout, Loon, Beaver, and similar), do not give specific directions, regulations, or access details without first confirming county AND, ideally, the nearest town or a specific landmark — county alone may not be enough to be sure which lake is meant.
+
+GENERAL PATTERN (lower confidence on specific pairs beyond what's confirmed above, but the pattern itself is well-established for both rivers and lakes) — generic single-word creek/river/lake names are common across many WA counties independently: WDFW's own regulation pamphlet and lake-page naming convention both disambiguate by appending the county name (e.g., "Cedar Creek (Jefferson County)," "Rock Creek Lake (Skamania County)," "Summit Lake (Thurston County)") — that convention exists precisely because these names collide constantly, and it's worth noting WDFW's convention still isn't always sufficient (see Clear Lake/Skagit County above). Adopt the same discipline, one level more cautious: whenever a person mentions a generically-named creek, small river, or small lake without a county, region, or nearby landmark, don't assume which one they mean — ask, or state your assumption explicitly and invite correction, rather than silently picking one. This matters far more for smaller, generically-named waters than for the large, distinctively-named rivers and lakes (Skagit, Snoqualmie, Chehalis, Sammamish, etc.) which are unique enough in western WA that this risk is much lower.
 
 EXPERT VOICES: You reference specific advice — Tom Nelson on herring brine/sharpness/scale integrity, Buzz Ramsey on flasher colors (chartreuse/cloudy, chrome/sunny), John Martinis on location specificity, gear choices from proven sources.
 
@@ -1330,6 +1536,9 @@ function MyWatersTab({favWaters,onSave,onWaterClick,T}){
   const inferred = typeOvr || inferWaterType(name);
   const maMatch = hasFreshwaterWord ? null : matchMarineArea(name);
   const ambiguousName = !hasFreshwaterWord && isAmbiguousWaterName(name);
+  const lakeMatches = findLakeMatches(name);
+  const lakeCounties = [...new Set(lakeMatches.map(l=>l.county))];
+  const needsCountyPick = lakeCounties.length>1 && !new RegExp(`\\((${lakeCounties.join('|')})\\s*(county)?\\)`,'i').test(name);
 
   const moveWater=(from,to)=>{
     if(to<0||to>=favWaters.length||from===to) return;
@@ -1341,6 +1550,7 @@ function MyWatersTab({favWaters,onSave,onWaterClick,T}){
 
   const add=async()=>{
     if(!name.trim()) return;
+    if(needsCountyPick) return; // must resolve which lake first
     setAdding(true);
     const wType=inferred||'Unknown';
     const ma=maMatch;
@@ -1389,6 +1599,17 @@ Use: "open","closed","limited","unknown". Max 4 relevant species. Month: ${month
             <input placeholder="e.g. Skykomish River, MA 10, Hood Canal, Lake Sammamish" value={name} onChange={e=>setName(e.target.value)} style={inpOf(T)} onKeyDown={e=>e.key==='Enter'&&add()}/>
             {maMatch&&<div style={{fontSize:11,color:T.accent,marginTop:6,fontFamily:F}}>✓ Matched: {maMatch.title}</div>}
             {ambiguousName&&<div style={{fontSize:11,color:T.hot,marginTop:6,fontFamily:F,lineHeight:1.5}}>⚠ This name is shared by both a river and a Marine Area shoreline spot. Saved as the river/freshwater body — add "River" to the name if that's not what you meant, or type the Marine Area number instead (e.g. "MA 12") if you meant the saltwater side. Regs often differ between the tidal mouth and the upper river.</div>}
+            {needsCountyPick&&(
+              <div style={{marginTop:8,padding:10,background:T.muted,border:`1px solid ${T.hot}55`,borderRadius:8}}>
+                <div style={{fontSize:12,color:T.text,marginBottom:8,fontFamily:F,lineHeight:1.5}}>⚠ There's more than one "{lakeMatches[0]?.name}" in Washington — which one do you mean?</div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                  {lakeCounties.map(c=>(
+                    <button key={c} onClick={()=>setName(`${lakeMatches[0].name} (${c} County)`)} style={{...btnOf(T,'ghost'),padding:'5px 11px',fontSize:12}}>{c} County</button>
+                  ))}
+                </div>
+                <div style={{fontSize:10,color:T.dim,marginTop:6,fontFamily:F}}>Not seeing your county? This is a starter list, not every Washington lake yet — type the full name with county yourself, e.g. "{lakeMatches[0]?.name} (Whatcom County)".</div>
+              </div>
+            )}
           </Field>
           <Field label="Water Type (auto-detected)" T={T}>
             <div style={{marginBottom:6}}>
@@ -1402,7 +1623,7 @@ Use: "open","closed","limited","unknown". Max 4 relevant species. Month: ${month
             <input placeholder="Launch, access point…" value={notes} onChange={e=>setNotes(e.target.value)} style={inpOf(T)}/>
           </Field>
         </div>
-        <button onClick={add} disabled={adding||!name.trim()} style={{...btnOf(T,'green'),marginTop:12,opacity:adding?0.7:1}}>{adding?'Looking up current status…':'Add Water'}</button>
+        <button onClick={add} disabled={adding||!name.trim()||needsCountyPick} style={{...btnOf(T,'green'),marginTop:12,opacity:(adding||needsCountyPick)?0.6:1}}>{adding?'Looking up current status…':needsCountyPick?'Pick a county above first':'Add Water'}</button>
         <div style={{fontSize:11,color:T.sub,marginTop:8,fontFamily:F}}>Fetches live regulation status via WDFW. Always verify at wdfw.wa.gov.</div>
       </div>
 
@@ -1853,6 +2074,25 @@ function GearCatalog({gear,onSave,configs,onSaveConfigs,T}){
     onSaveConfigs(configs.filter(c=>String(c.rodId)!==String(id)&&String(c.reelId)!==String(id)));
   };
   const updateQty=(id,delta)=>onSave(gear.map(g=>g.id===id?{...g,qty:Math.max(1,(Number(g.qty)||1)+delta)}:g));
+  const [dragCat,setDragCat]=useState(null); // {cat, idx} of item being dragged, scoped to its category
+  const [dragOverIdx,setDragOverIdx]=useState(null);
+  // Reorder within a single category's items, then rebuild the full flat gear
+  // array preserving each category's (possibly newly reordered) sequence —
+  // dragging is always scoped to one category group, matching how the list
+  // is displayed (grouped by Rod/Reel/Lure/etc).
+  const moveGearItem=(cat,fromIdx,toIdx)=>{
+    const catItems = gear.filter(g=>g.category===cat);
+    if(toIdx<0||toIdx>=catItems.length||fromIdx===toIdx) return;
+    const reordered=[...catItems];
+    const [moved]=reordered.splice(fromIdx,1);
+    reordered.splice(toIdx,0,moved);
+    let cursor=0;
+    const rebuilt = gear.map(g=>{
+      if(g.category!==cat) return g;
+      return reordered[cursor++];
+    });
+    onSave(rebuilt);
+  };
 
   const grouped = GEAR_CATEGORIES.map(cat=>({cat,items:gear.filter(g=>g.category===cat)})).filter(g=>g.items.length>0);
   const rods=gear.filter(g=>g.category==='Rod');
@@ -1980,11 +2220,22 @@ function GearCatalog({gear,onSave,configs,onSaveConfigs,T}){
       <div style={cardOf(T)}>
         <SectionHead T={T}>Gear Bag ({gear.length})</SectionHead>
         {gear.length===0&&<div style={{color:T.sub,fontSize:13,fontFamily:F}}>No gear logged yet — accuracy here helps the AI Guide recommend the right setup as conditions change.</div>}
+        {gear.length>1&&<div style={{fontSize:11,color:T.dim,fontFamily:F,marginBottom:8}}>↕ Drag items within a category to reorder them however you prefer.</div>}
         {grouped.map(({cat,items})=>(
           <div key={cat} style={{marginBottom:14}}>
             <div style={{fontSize:10,color:T.sub,letterSpacing:1.2,textTransform:'uppercase',marginBottom:7,fontWeight:'600',fontFamily:F}}>{cat} ({items.length})</div>
-            {items.map(g=>(
-              <div key={g.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'9px 0',borderBottom:`1px solid ${T.border}`,gap:10}}>
+            {items.map((g,idx)=>(
+              <div key={g.id}
+                draggable
+                onDragStart={()=>setDragCat({cat,idx})}
+                onDragOver={e=>{e.preventDefault(); setDragOverIdx(`${cat}-${idx}`);}}
+                onDragLeave={()=>setDragOverIdx(null)}
+                onDrop={e=>{e.preventDefault(); if(dragCat&&dragCat.cat===cat) moveGearItem(cat,dragCat.idx,idx); setDragCat(null); setDragOverIdx(null);}}
+                onDragEnd={()=>{setDragCat(null); setDragOverIdx(null);}}
+                style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'9px 0',borderBottom:`1px solid ${T.border}`,gap:10,
+                  cursor:'grab', opacity:(dragCat&&dragCat.cat===cat&&dragCat.idx===idx)?0.4:1,
+                  outline:dragOverIdx===`${cat}-${idx}`&&!(dragCat&&dragCat.cat===cat&&dragCat.idx===idx)?`2px dashed ${T.accent}`:'none', outlineOffset:2}}>
+                <span style={{color:T.dim,fontSize:13,flexShrink:0}}>⠿</span>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{color:T.text,fontSize:14,fontFamily:F}}>{g.name}</div>
                   <div style={{color:T.sub,fontSize:11,marginTop:2,fontFamily:F}}>
@@ -2114,11 +2365,17 @@ function LineupBoard({gear,configs,boats,lineups,onSaveLineups,favWaters,T}){
   const [editingId,setEditingId]=useState(null);
   const [showNew,setShowNew]=useState(false);
   const [newName,setNewName]=useState('');
+  const [dragIdx,setDragIdx]=useState(null);
+  const [dragOverIdx,setDragOverIdx]=useState(null);
   // ALL gear is individually assignable to lineups — including rods and reels.
   // Configs (pre-paired rod+reel combos) are an optional secondary layer shown
   // only if the user has actually created some. Individual gear is the default.
   const allGear = gear;
   const SUGGESTED=['Saltwater Salmon — Trolling','Saltwater Salmon — Mooching','River Steelhead','Trout — Lowland Lakes','Sea-Run Cutthroat','Bass'];
+  // Collapse lineup cards by default once the list gets long — pure manual
+  // drag-to-reorder (below) is how you group related lineups together; there's
+  // no separate named-folder system, just position in the list.
+  const manyLineups = lineups.length>6;
 
   const createLineup=()=>{
     const name=newName.trim();
@@ -2128,6 +2385,13 @@ function LineupBoard({gear,configs,boats,lineups,onSaveLineups,favWaters,T}){
   };
   const delLineup=id=>onSaveLineups(lineups.filter(l=>l.id!==id));
   const updateLineup=(id,patch)=>onSaveLineups(lineups.map(l=>l.id===id?{...l,...patch}:l));
+  const moveLineup=(from,to)=>{
+    if(to<0||to>=lineups.length||from===to) return;
+    const next=[...lineups];
+    const [item]=next.splice(from,1);
+    next.splice(to,0,item);
+    onSaveLineups(next);
+  };
 
   return(
     <div style={{display:'flex',flexDirection:'column',gap:14}}>
@@ -2152,16 +2416,30 @@ function LineupBoard({gear,configs,boats,lineups,onSaveLineups,favWaters,T}){
           No lineups yet. Create one for a species, technique, or favorite water — then pick rods, reels, and tackle from your gear bag.
         </div>
       )}
-      {lineups.map(lineup=>(
-        <LineupCard key={lineup.id} lineup={lineup} allGear={allGear} configs={configs} boats={boats}
-          editing={editingId===lineup.id} onToggleEdit={()=>setEditingId(editingId===lineup.id?null:lineup.id)}
-          onUpdate={patch=>updateLineup(lineup.id,patch)} onDelete={()=>delLineup(lineup.id)} T={T}/>
+      {lineups.length>1&&(
+        <div style={{fontSize:11,color:T.dim,fontFamily:F,marginTop:-6}}>↕ Drag any lineup to reorder — put related ones next to each other however you like.</div>
+      )}
+      {lineups.map((lineup,idx)=>(
+        <div key={lineup.id}
+          draggable
+          onDragStart={()=>setDragIdx(idx)}
+          onDragOver={e=>{e.preventDefault(); setDragOverIdx(idx);}}
+          onDragLeave={()=>setDragOverIdx(null)}
+          onDrop={e=>{e.preventDefault(); if(dragIdx!==null) moveLineup(dragIdx,idx); setDragIdx(null); setDragOverIdx(null);}}
+          onDragEnd={()=>{setDragIdx(null); setDragOverIdx(null);}}
+          style={{opacity:dragIdx===idx?0.4:1, outline:dragOverIdx===idx&&dragIdx!==idx?`2px dashed ${T.accent}`:'none', outlineOffset:2, borderRadius:14, cursor:'grab'}}>
+          <LineupCard lineup={lineup} allGear={allGear} configs={configs} boats={boats}
+            editing={editingId===lineup.id} onToggleEdit={()=>setEditingId(editingId===lineup.id?null:lineup.id)}
+            onUpdate={patch=>updateLineup(lineup.id,patch)} onDelete={()=>delLineup(lineup.id)}
+            defaultCollapsed={manyLineups} T={T}/>
+        </div>
       ))}
     </div>
   );
 }
 
-function LineupCard({lineup,allGear,configs,boats,editing,onToggleEdit,onUpdate,onDelete,T}){
+function LineupCard({lineup,allGear,configs,boats,editing,onToggleEdit,onUpdate,onDelete,defaultCollapsed,T}){
+  const [collapsed,setCollapsed]=useState(!!defaultCollapsed);
   // Merge gearIds (new field) and lureIds (legacy field) for backward compat.
   // New gear gets written to gearIds; old data in lureIds still reads correctly.
   const activeGearIds = new Set([...(lineup.gearIds||[]),...(lineup.lureIds||[])]);
@@ -2218,9 +2496,13 @@ function LineupCard({lineup,allGear,configs,boats,editing,onToggleEdit,onUpdate,
   return(
     <div style={{...cardOf(T),borderLeft:`3px solid ${T.hot}`}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
-        <div>
-          <div style={{fontSize:15,fontWeight:'700',color:T.text,fontFamily:F}}>{lineup.name}</div>
-          {boat&&<div style={{fontSize:11,color:T.sub,fontFamily:F,marginTop:2}}>🛶 {boat.name} · {boat.propulsion}</div>}
+        <div onClick={()=>!editing&&setCollapsed(!collapsed)} style={{cursor:editing?'default':'pointer',flex:1}}>
+          <div style={{display:'flex',alignItems:'center',gap:6}}>
+            {!editing&&<span style={{fontSize:11,color:T.sub}}>{collapsed?'▶':'▼'}</span>}
+            <div style={{fontSize:15,fontWeight:'700',color:T.text,fontFamily:F}}>{lineup.name}</div>
+          </div>
+          {boat&&<div style={{fontSize:11,color:T.sub,fontFamily:F,marginTop:2,marginLeft:collapsed?17:0}}>🛶 {boat.name} · {boat.propulsion}</div>}
+          {collapsed&&!editing&&<div style={{fontSize:11,color:T.dim,fontFamily:F,marginTop:2,marginLeft:17}}>{sortedStarters.length} item{sortedStarters.length!==1?'s':''} in starting lineup</div>}
         </div>
         <div style={{display:'flex',gap:6,flexShrink:0}}>
           <button onClick={onToggleEdit} style={{...btnOf(T,'ghost'),padding:'4px 10px',fontSize:11}}>{editing?'Done':'Edit'}</button>
@@ -2228,6 +2510,7 @@ function LineupCard({lineup,allGear,configs,boats,editing,onToggleEdit,onUpdate,
         </div>
       </div>
 
+      {(!collapsed||editing)&&(<>
       {editing&&boats.length>0&&(
         <div style={{marginBottom:12}}>
           <Field label="Boat" T={T}>
@@ -2297,6 +2580,7 @@ function LineupCard({lineup,allGear,configs,boats,editing,onToggleEdit,onUpdate,
           )}
         </div>
       )}
+      </>)}
     </div>
   );
 }
@@ -2416,25 +2700,110 @@ function History({outings,onSave,T}){
 }
 
 // ── Settings — bring-your-own Anthropic API key for standalone deployments ──
-function SettingsTab({hasApiKey,onSaveKey,T}){
+function AccountTab({hasApiKey,onSaveKey,userEmail,onSignOut,allData,T}){
   const [keyInput,setKeyInput]=useState('');
   const [showKey,setShowKey]=useState(false);
   const [saved,setSaved]=useState(false);
+
+  const [pw1,setPw1]=useState(''); const [pw2,setPw2]=useState('');
+  const [pwBusy,setPwBusy]=useState(false); const [pwMsg,setPwMsg]=useState(null); // {ok,text}
+
+  const [delConfirm,setDelConfirm]=useState(''); const [delBusy,setDelBusy]=useState(false); const [delErr,setDelErr]=useState('');
 
   const handleSave=()=>{
     if(!keyInput.trim()) return;
     onSaveKey(keyInput.trim());
     setKeyInput('');
     setSaved(true);
-    setTimeout(()=>setSaved(false),2500);
+    setTimeout(()=>setSaved(false),5000);
   };
   const handleClear=()=>{
     onSaveKey('');
     setSaved(false);
   };
 
+  const handleChangePassword=async()=>{
+    setPwMsg(null);
+    if(pw1.length<6){ setPwMsg({ok:false,text:'Password must be at least 6 characters.'}); return; }
+    if(pw1!==pw2){ setPwMsg({ok:false,text:"Passwords don't match."}); return; }
+    setPwBusy(true);
+    try{
+      await fbChangePassword(pw1);
+      setPwMsg({ok:true,text:'Password changed successfully.'});
+      setPw1(''); setPw2('');
+    }catch(e){ setPwMsg({ok:false,text:e.message}); }
+    setPwBusy(false);
+  };
+
+  const handleExport=()=>{
+    const blob = new Blob([JSON.stringify(allData,null,2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `blackmouth-export-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDelete=async()=>{
+    if(delConfirm!=='DELETE'){ setDelErr('Type DELETE in the box to confirm.'); return; }
+    setDelBusy(true); setDelErr('');
+    try{
+      await fbDeleteAccount();
+      onSignOut&&onSignOut();
+    }catch(e){ setDelErr(e.message); setDelBusy(false); }
+  };
+
   return(
     <div style={{display:'flex',flexDirection:'column',gap:14}}>
+      <div style={cardOf(T)}>
+        <SectionHead T={T}>Account</SectionHead>
+        <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:T.muted,border:`1px solid ${T.border}`,borderRadius:8}}>
+          <span style={{fontSize:20}}>👤</span>
+          <div>
+            <div style={{fontSize:11,color:T.sub,fontFamily:F,textTransform:'uppercase',letterSpacing:1}}>Signed in as</div>
+            <div style={{fontSize:14,color:T.text,fontFamily:F,fontWeight:'600'}}>{userEmail||'—'}</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={cardOf(T)}>
+        <SectionHead T={T}>Change Password</SectionHead>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          <input type="password" placeholder="New password" value={pw1} onChange={e=>setPw1(e.target.value)} style={inpOf(T)}/>
+          <input type="password" placeholder="Confirm new password" value={pw2} onChange={e=>setPw2(e.target.value)} style={inpOf(T)} onKeyDown={e=>e.key==='Enter'&&handleChangePassword()}/>
+          {pwMsg&&<div style={{fontSize:12,color:pwMsg.ok?T.accent:T.err,fontFamily:F,fontWeight:'600'}}>{pwMsg.ok?'✓ ':'⚠ '}{pwMsg.text}</div>}
+          <button onClick={handleChangePassword} disabled={pwBusy||!pw1||!pw2} style={{...btnOf(T,'green'),opacity:(pwBusy||!pw1||!pw2)?0.5:1}}>{pwBusy?'Changing…':'Change Password'}</button>
+        </div>
+      </div>
+
+      <div style={cardOf(T)}>
+        <SectionHead T={T}>Signed-In Devices</SectionHead>
+        <div style={{fontSize:13,color:T.text,marginBottom:10,fontFamily:F,lineHeight:1.6}}>
+          {onSignOut&&<button onClick={onSignOut} style={{...btnOf(T,'ghost'),marginBottom:10}}>Sign Out (this device)</button>}
+        </div>
+        <div style={{fontSize:12,color:T.sub,fontFamily:F,lineHeight:1.6,fontStyle:'italic'}}>
+          "Sign out everywhere" isn't available yet — revoking sessions on every device requires a small additional server-side piece we haven't built. If that's something you need, ask and it can be added.
+        </div>
+      </div>
+
+      <div style={cardOf(T)}>
+        <SectionHead T={T}>Export My Data</SectionHead>
+        <div style={{fontSize:13,color:T.text,marginBottom:10,fontFamily:F,lineHeight:1.6}}>
+          Download everything you've logged — outings, gear, lineups, boats, and favorite waters — as a single JSON file.
+        </div>
+        <button onClick={handleExport} style={btnOf(T,'ghost')}>⬇ Download My Data</button>
+      </div>
+
+      <div style={{...cardOf(T),border:`1px solid ${T.err}55`}}>
+        <SectionHead T={T}>Delete Account</SectionHead>
+        <div style={{fontSize:13,color:T.text,marginBottom:10,fontFamily:F,lineHeight:1.6}}>
+          This permanently deletes your login. It cannot be undone. <strong>Export your data first</strong> if you might want it later.
+        </div>
+        <input placeholder="Type DELETE to confirm" value={delConfirm} onChange={e=>setDelConfirm(e.target.value)} style={{...inpOf(T),marginBottom:8}}/>
+        {delErr&&<div style={{fontSize:12,color:T.err,marginBottom:8,fontFamily:F}}>{delErr}</div>}
+        <button onClick={handleDelete} disabled={delBusy} style={{...btnOf(T,'ghost'),color:T.err,borderColor:`${T.err}44`,opacity:delBusy?0.5:1}}>{delBusy?'Deleting…':'Delete My Account'}</button>
+      </div>
+
       <div style={cardOf(T)}>
         <SectionHead T={T}>Anthropic API Key</SectionHead>
         <div style={{fontSize:13,color:T.text,marginBottom:8,lineHeight:1.6,fontFamily:F}}>
@@ -2447,12 +2816,18 @@ function SettingsTab({hasApiKey,onSaveKey,T}){
         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
           <span style={{fontSize:12,color:T.sub,fontFamily:F}}>Status:</span>
           {hasApiKey
-            ? <span style={{fontSize:12,color:T.accent,fontFamily:F,fontWeight:'600'}}>🤖 Key set — AI features ready</span>
-            : <span style={{fontSize:12,color:T.err,fontFamily:F,fontWeight:'600'}}>⚠ No key set yet</span>
+            ? <span style={{fontSize:13,color:'#fff',background:T.accent,padding:'3px 10px',borderRadius:14,fontFamily:F,fontWeight:'700'}}>🤖 Key set — AI features ready</span>
+            : <span style={{fontSize:13,color:'#fff',background:T.err,padding:'3px 10px',borderRadius:14,fontFamily:F,fontWeight:'700'}}>⚠ No key set yet</span>
           }
         </div>
+        {saved&&(
+          <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',marginBottom:10,background:`${T.accent}22`,border:`1px solid ${T.accent}`,borderRadius:8}}>
+            <span style={{fontSize:18}}>✓</span>
+            <span style={{fontSize:13,color:T.text,fontFamily:F,fontWeight:'600'}}>Key saved — AI features are ready to use now.</span>
+          </div>
+        )}
 
-        <div style={{display:'flex',gap:8}}>
+        <div style={{display:'flex',gap:8,marginBottom:10}}>
           <input
             type={showKey?'text':'password'}
             placeholder="sk-ant-…"
@@ -2473,28 +2848,53 @@ function SettingsTab({hasApiKey,onSaveKey,T}){
 }
 
 // ── Sign-in screen (shown when Firebase is configured and not yet signed in) ──
-function SignInScreen({onSignIn,error,busy}){
+function SignInScreen({onSignIn,onSignUp,error,busy}){
+  const [mode,setMode]=useState('signin'); // 'signin' | 'signup'
   const [email,setEmail]=useState('');
   const [password,setPassword]=useState('');
+  const [password2,setPassword2]=useState('');
+  const [inviteCode,setInviteCode]=useState('');
   const T=DARK;
+
+  const canSignIn = email && password;
+  const canSignUp = email && password && password.length>=6 && password===password2 && inviteCode;
+  const mismatch = mode==='signup' && password2 && password!==password2;
+
+  const submit=()=>{
+    if(mode==='signin'){ if(canSignIn) onSignIn(email,password); }
+    else{ if(canSignUp) onSignUp(email,password,inviteCode); }
+  };
+
   return(
     <div style={{background:T.bg,minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:F,padding:20}}>
       <div style={{...cardOf(T),width:'100%',maxWidth:360}}>
         <div style={{textAlign:'center',marginBottom:18}}>
           <div style={{display:'flex',justifyContent:'center',marginBottom:10}}><BrandMark T={T} size={44}/></div>
           <div style={{fontSize:18,fontWeight:'700',color:T.text}}>Blackmouth<span style={{color:T.hot}}>.AI</span></div>
-          <div style={{fontSize:12,color:T.sub,marginTop:4}}>Sign in to sync your data</div>
+          <div style={{fontSize:12,color:T.sub,marginTop:4}}>{mode==='signin'?'Sign in to sync your data':'Create an account to sync your data'}</div>
         </div>
+
+        <div style={{display:'flex',gap:6,marginBottom:16,background:T.muted,borderRadius:8,padding:3}}>
+          <button onClick={()=>{setMode('signin');}} style={{flex:1,padding:'7px',borderRadius:6,border:'none',background:mode==='signin'?T.accent:'transparent',color:mode==='signin'?'#fff':T.sub,fontFamily:F,fontSize:13,fontWeight:'600',cursor:'pointer'}}>Sign In</button>
+          <button onClick={()=>{setMode('signup');}} style={{flex:1,padding:'7px',borderRadius:6,border:'none',background:mode==='signup'?T.accent:'transparent',color:mode==='signup'?'#fff':T.sub,fontFamily:F,fontSize:13,fontWeight:'600',cursor:'pointer'}}>Create Account</button>
+        </div>
+
         <div style={{display:'flex',flexDirection:'column',gap:10}}>
-          <input type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} style={inpOf(T)} onKeyDown={e=>e.key==='Enter'&&onSignIn(email,password)}/>
-          <input type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} style={inpOf(T)} onKeyDown={e=>e.key==='Enter'&&onSignIn(email,password)}/>
+          <input type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} style={inpOf(T)} onKeyDown={e=>e.key==='Enter'&&submit()}/>
+          <input type="password" placeholder={mode==='signup'?'Password (6+ characters)':'Password'} value={password} onChange={e=>setPassword(e.target.value)} style={inpOf(T)} onKeyDown={e=>e.key==='Enter'&&submit()}/>
+
+          {mode==='signup'&&(<>
+            <input type="password" placeholder="Confirm password" value={password2} onChange={e=>setPassword2(e.target.value)} style={inpOf(T)} onKeyDown={e=>e.key==='Enter'&&submit()}/>
+            {mismatch&&<div style={{fontSize:11,color:T.err}}>Passwords don't match.</div>}
+            <input type="text" placeholder="Invite code" value={inviteCode} onChange={e=>setInviteCode(e.target.value)} style={inpOf(T)} onKeyDown={e=>e.key==='Enter'&&submit()}/>
+            <div style={{fontSize:11,color:T.dim,lineHeight:1.5}}>Ask whoever shared this site with you for the invite code.</div>
+          </>)}
+
           {error&&<div style={{fontSize:12,color:T.err}}>{error}</div>}
-          <button onClick={()=>onSignIn(email,password)} disabled={busy||!email||!password} style={{...btnOf(T,'green'),opacity:busy?0.7:1}}>
-            {busy?'Signing in…':'Sign In'}
+
+          <button onClick={submit} disabled={busy||(mode==='signin'?!canSignIn:!canSignUp)} style={{...btnOf(T,'green'),opacity:busy?0.7:1}}>
+            {busy?(mode==='signin'?'Signing in…':'Creating account…'):(mode==='signin'?'Sign In':'Create Account')}
           </button>
-        </div>
-        <div style={{fontSize:11,color:T.sub,marginTop:16,textAlign:'center',lineHeight:1.6}}>
-          Ask whoever set this up to create your account — there's no public sign-up here on purpose.
         </div>
       </div>
     </div>
@@ -2545,6 +2945,26 @@ export default function Root(){
     setAuthBusy(false);
   };
 
+  const handleSignUp = async (email,password,inviteCode)=>{
+    setAuthBusy(true); setAuthError('');
+    if((inviteCode||'').trim()!==INVITE_CODE){
+      setAuthError('Invite code is incorrect.');
+      setAuthBusy(false);
+      return;
+    }
+    try{
+      const {uid} = await fbSignUp(email,password);
+      setSyncUser(uid);
+      setUserEmail(email);
+      await cacheRefreshToken(fbTokens.refreshToken);
+      await cacheEmail(email);
+      setAuthState('signedIn');
+    }catch(e){
+      setAuthError(e.message || 'Could not create account.');
+    }
+    setAuthBusy(false);
+  };
+
   const handleSignOut = ()=>{
     fbSignOut(); setSyncUser(null);
     cacheRefreshToken(null);
@@ -2557,7 +2977,7 @@ export default function Root(){
     return <div style={{background:DARK.bg,height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',color:DARK.sub,fontFamily:F,fontSize:15}}>Loading…</div>;
   }
   if(authState==='signedOut'){
-    return <SignInScreen onSignIn={handleSignIn} error={authError} busy={authBusy}/>;
+    return <SignInScreen onSignIn={handleSignIn} onSignUp={handleSignUp} error={authError} busy={authBusy}/>;
   }
   return <BlackmouthApp syncStatus={authState==='signedIn'?'synced':'local'} onSignOut={authState==='signedIn'?handleSignOut:null} userEmail={userEmail}/>;
 }
@@ -2567,11 +2987,14 @@ SETUP NOTES — cross-device / friend sync via Firebase (optional)
 
 1. console.firebase.google.com → Add project → name it anything.
 2. Build > Authentication > Get started > enable Email/Password sign-in.
-3. Authentication > Users > Add user — one per person you want to share with.
-   There's no public sign-up screen in the app, so only people you add here
-   can ever sign in (and use your Anthropic usage via this artifact's AI
-   features, which actually bills to whichever Claude account is viewing the
-   artifact, not to you, when published).
+3. Anyone can create their own account from the app's "Create Account" tab,
+   gated by a shared invite code (see INVITE_CODE near the top of this file —
+   change it from the default before sharing this site). This is a soft
+   filter, not real security — the code ships in the browser bundle and is
+   readable by anyone who opens dev tools. Fine for friends you trust, not a
+   real access-control mechanism. If you need actual per-person control
+   instead, go back to Authentication > Users > Add user manually and remove
+   the "Create Account" tab from SignInScreen.
 4. Build > Firestore Database > Create database (production mode).
 5. Firestore > Rules tab, paste this, then Publish:
 
