@@ -1,129 +1,81 @@
 import { useState, useEffect, useRef } from "react";
 
-// ── Firebase backend (REST API — no SDK import needed) ──────────────────────
-// Fill these in once you've created your Firebase project (see README.md).
-// Until you do, the app runs in local-only mode automatically.
+// ── Anthropic API access ─────────────────────────────────────────────────────
+// Inside a published Claude.ai artifact, calls to api.anthropic.com are proxied
+// and authenticated automatically — no key needed, and none should be entered.
+// Running standalone (e.g. this file built with Vite and deployed to your own
+// domain), the browser must send a real key directly. Set it as an environment
+// variable at build time — VITE_ANTHROPIC_API_KEY — never hardcode it here,
+// since anything in this file ships to every visitor's browser.
+// Inside a published Claude.ai artifact, calls to api.anthropic.com are proxied
+// and authenticated automatically — no key needed, and none should be entered.
+// Running standalone (e.g. this file built with Vite and deployed to your own
+// domain), the browser must send a real key directly.
+//
+// IMPORTANT: this file must NEVER contain the literal token `import.meta`.
+// Claude.ai's artifact runtime executes this code as a plain script, not a
+// real ES module — `import.meta` is a SyntaxError there (not just undefined),
+// which fails at parse time before anything else can run, including any
+// try/catch. That's a hard constraint, not a style preference.
+//
+// The safe way to read a build-time env var in code that must run in both
+// contexts: reference a plain global identifier and guard it with `typeof`.
+// `typeof` on an undeclared identifier never throws, in any context. Vite
+// replaces __ANTHROPIC_API_KEY__ with the real value at build time via the
+// `define` config below — see setup notes at the bottom of this file.
+const isInClaudeArtifact = () => typeof window!=='undefined' && !!window.storage;
+const ANTHROPIC_API_KEY = typeof __ANTHROPIC_API_KEY__!=='undefined' ? __ANTHROPIC_API_KEY__ : '';
+const isAnthropicConfigured = () => isInClaudeArtifact() || !!ANTHROPIC_API_KEY;
+
+// ── Firebase backend (REST API — no SDK import needed in this environment) ──
+// Edit these once you've created your Firebase project (see setup notes at
+// the bottom of this file). Leaving the placeholder makes the app run in
+// local-only mode automatically — nothing breaks if you skip this.
 const firebaseConfig = {
-  apiKey: "AIzaSyCfdsnnux0j8z0Llw-0qiNkkbLgytMs79g",
-  projectId: "cascadia-fishing",
+  apiKey: "YOUR_API_KEY",
+  projectId: "YOUR_PROJECT_ID",
 };
-const isFirebaseConfigured = () =>
-  firebaseConfig.apiKey &&
-  firebaseConfig.apiKey !== "YOUR_API_KEY" &&
-  firebaseConfig.projectId &&
-  firebaseConfig.projectId !== "YOUR_PROJECT_ID";
+const isFirebaseConfigured = () => firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY" && firebaseConfig.projectId && firebaseConfig.projectId !== "YOUR_PROJECT_ID";
 
-let fbTokens = null; // {idToken,refreshToken,expiresAt,uid} — in-memory for this session
+let fbTokens = null; // {idToken, refreshToken, expiresAt, uid} — in-memory for this session
 
-function cacheRefreshToken(token) {
-  try {
-    if (token) localStorage.setItem("fb_refresh", token);
-    else localStorage.removeItem("fb_refresh");
-  } catch {}
-}
-function getCachedRefreshToken() {
-  try {
-    return localStorage.getItem("fb_refresh") || null;
-  } catch {
-    return null;
-  }
-}
-
-async function fbSignUp(email, password) {
-  try {
-    const r = await fetch(
-      `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseConfig.apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, returnSecureToken: true }),
-      }
-    );
+async function fbSignIn(email, password){
+  try{
+    const r = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${firebaseConfig.apiKey}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email, password, returnSecureToken:true }),
+    });
     const d = await r.json();
-    if (d.error)
-      throw new Error(
-        d.error.message === "EMAIL_EXISTS"
-          ? "An account already exists with that email — try signing in instead."
-          : d.error.message === "WEAK_PASSWORD : Password should be at least 6 characters"
-          ? "Password must be at least 6 characters."
-          : d.error.message || "Sign-up failed"
-      );
-    fbTokens = {
-      idToken: d.idToken,
-      refreshToken: d.refreshToken,
-      expiresAt: Date.now() + Number(d.expiresIn) * 1000,
-      uid: d.localId,
-    };
+    if(d.error) throw new Error(d.error.message==='INVALID_LOGIN_CREDENTIALS' ? 'Incorrect email or password.' : (d.error.message||'Sign-in failed'));
+    fbTokens = { idToken:d.idToken, refreshToken:d.refreshToken, expiresAt:Date.now()+Number(d.expiresIn)*1000, uid:d.localId };
     return fbTokens.uid;
-  } catch (e) {
-    throw new Error(
-      e.message.includes("Failed to fetch") ? "Network error — check your connection." : e.message
-    );
+  }catch(e){
+    throw new Error(e.message.includes('Failed to fetch') ? 'Network error — check your connection.' : e.message);
   }
 }
-async function fbSignIn(email, password) {
-  try {
-    const r = await fetch(
-      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${firebaseConfig.apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, returnSecureToken: true }),
-      }
-    );
+async function fbRefresh(refreshToken){
+  try{
+    const r = await fetch(`https://securetoken.googleapis.com/v1/token?key=${firebaseConfig.apiKey}`, {
+      method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:`grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`,
+    });
     const d = await r.json();
-    if (d.error)
-      throw new Error(
-        d.error.message === "INVALID_LOGIN_CREDENTIALS"
-          ? "Incorrect email or password."
-          : d.error.message || "Sign-in failed"
-      );
-    fbTokens = {
-      idToken: d.idToken,
-      refreshToken: d.refreshToken,
-      expiresAt: Date.now() + Number(d.expiresIn) * 1000,
-      uid: d.localId,
-    };
+    if(d.error) throw new Error('Session expired');
+    fbTokens = { idToken:d.id_token, refreshToken:d.refresh_token, expiresAt:Date.now()+Number(d.expires_in)*1000, uid:d.user_id };
     return fbTokens.uid;
-  } catch (e) {
-    throw new Error(
-      e.message.includes("Failed to fetch") ? "Network error — check your connection." : e.message
-    );
+  }catch(e){
+    throw new Error(e.message.includes('Failed to fetch') ? 'Network error — check your connection.' : e.message);
   }
 }
-async function fbRefresh(refreshToken) {
-  try {
-    const r = await fetch(
-      `https://securetoken.googleapis.com/v1/token?key=${firebaseConfig.apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`,
-      }
-    );
-    const d = await r.json();
-    if (d.error) throw new Error("Session expired");
-    fbTokens = {
-      idToken: d.id_token,
-      refreshToken: d.refresh_token,
-      expiresAt: Date.now() + Number(d.expires_in) * 1000,
-      uid: d.user_id,
-    };
-    return fbTokens.uid;
-  } catch (e) {
-    throw new Error(
-      e.message.includes("Failed to fetch") ? "Network error — check your connection." : e.message
-    );
-  }
-}
-async function fbGetToken() {
-  if (fbTokens && Date.now() < fbTokens.expiresAt - 60000) return fbTokens.idToken;
-  if (fbTokens?.refreshToken) {
-    try {
+async function fbGetToken(){
+  if(fbTokens && Date.now()<fbTokens.expiresAt-60000) return fbTokens.idToken;
+  if(fbTokens?.refreshToken){
+    try{
       await fbRefresh(fbTokens.refreshToken);
       cacheRefreshToken(fbTokens.refreshToken);
       return fbTokens.idToken;
-    } catch {
+    }catch(e){
+      // If refresh fails (invalid key, session expired), clear tokens and return null
       fbTokens = null;
       cacheRefreshToken(null);
       return null;
@@ -131,101 +83,110 @@ async function fbGetToken() {
   }
   return null;
 }
-function fbSignOut() {
-  fbTokens = null;
+function fbSignOut(){ fbTokens = null; }
+
+// Dedicated cache for the refresh token — deliberately bypasses the main
+// stor/load/save layer (which routes to Firestore once signed in). This must
+// always live in Claude's own per-account window.storage so it can be read
+// BEFORE sign-in resolves, to enable silent re-auth on each fresh visit.
+async function cacheRefreshToken(token){
+  try{
+    if(typeof window!=='undefined' && window.storage){ await window.storage.set('fb_refresh', token||''); return; }
+  }catch{}
+  try{ localStorage.setItem('fb_refresh', token||''); }catch{}
+}
+async function getCachedRefreshToken(){
+  try{
+    if(typeof window!=='undefined' && window.storage){
+      const r = await window.storage.get('fb_refresh');
+      if(r?.value) return r.value;
+    }
+  }catch{}
+  try{ return localStorage.getItem('fb_refresh') || null; }catch{ return null; }
 }
 
-async function fsGet(uid, key) {
-  if (!uid || !isFirebaseConfigured()) return null;
+// Firestore REST — documents live at users/{uid}/data/{key}, one doc per storage key.
+async function fsGet(uid,key){
+  if(!uid || !isFirebaseConfigured()) return null;
   const token = await fbGetToken();
-  if (!token) return null;
-  const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents/users/${uid}/data/${encodeURIComponent(
-    key
-  )}`;
-  try {
+  if(!token) return null; // Not signed in or token refresh failed
+  const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents/users/${uid}/data/${encodeURIComponent(key)}`;
+  try{
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal });
+    const timeout = setTimeout(()=>controller.abort(), 5000);
+    const r = await fetch(url, { 
+      headers:{ Authorization:`Bearer ${token}` },
+      signal: controller.signal,
+    });
     clearTimeout(timeout);
-    if (!r.ok) {
-      if (r.status === 401 || r.status === 403) {
-        fbTokens = null;
+    if(!r.ok){
+      if(r.status === 401 || r.status === 403){
+        fbTokens = null; // Token invalid, force re-auth next time
         cacheRefreshToken(null);
       }
       return null;
     }
     const d = await r.json();
     return d?.fields?.value?.stringValue ?? null;
-  } catch {
-    return null;
-  }
+  }catch{ return null; }
 }
-async function fsSet(uid, key, value) {
-  if (!uid || !isFirebaseConfigured()) return false;
+async function fsSet(uid,key,value){
+  if(!uid || !isFirebaseConfigured()) return false;
   const token = await fbGetToken();
-  if (!token) return false;
-  const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents/users/${uid}/data/${encodeURIComponent(
-    key
-  )}`;
-  try {
+  if(!token) return false; // Not signed in or token refresh failed
+  const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents/users/${uid}/data/${encodeURIComponent(key)}`;
+  try{
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    const timeout = setTimeout(()=>controller.abort(), 5000);
     const r = await fetch(url, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ fields: { value: { stringValue: value }, updatedAt: { integerValue: String(Date.now()) } } }),
+      method:'PATCH', 
+      headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},
+      body: JSON.stringify({ fields:{ value:{stringValue:value}, updatedAt:{integerValue:String(Date.now())} } }),
       signal: controller.signal,
     });
     clearTimeout(timeout);
-    if (r.status === 401 || r.status === 403) {
-      fbTokens = null;
+    if(r.status === 401 || r.status === 403){
+      fbTokens = null; // Token invalid, force re-auth next time
       cacheRefreshToken(null);
     }
     return r.ok;
-  } catch {
-    return false;
-  }
+  }catch{ return false; }
 }
 
 let currentUid = null;
-function setSyncUser(uid) {
-  currentUid = uid;
-}
-
-// ── Per-browser Anthropic API key (for AI Guide billing — separate from login) ──
-function getApiKey() {
-  try {
-    return localStorage.getItem("cascadia_api_key") || "";
-  } catch {
-    return "";
-  }
-}
-function setApiKey(key) {
-  try {
-    if (key) localStorage.setItem("cascadia_api_key", key);
-    else localStorage.removeItem("cascadia_api_key");
-  } catch {}
-}
+function setSyncUser(uid){ currentUid = uid; }
 
 // ── Themes ─────────────────────────────────────────────────────────────────
 const DARK = {
-  bg: "#0C1A27", surface: "#132233", lift: "#1B3048", border: "#1E3A55",
-  text: "#E6F0F8", sub: "#6B9AB5", dim: "#2E4D65", muted: "#162030",
-  accent: "#32C870", hot: "#F07040", warn: "#EBB030", err: "#E04848",
-  openBg: "#0A2D1A", openTx: "#32C870", closeBg: "#2D0A0A", closeTx: "#E04848",
-  limitBg: "#2D1D00", limitTx: "#EBB030",
+  bg:'#0C1A27', surface:'#132233', lift:'#1B3048', border:'#1E3A55',
+  text:'#E6F0F8', sub:'#6B9AB5', dim:'#2E4D65', muted:'#162030',
+  accent:'#9B7FC0', hot:'#C9973E', warn:'#EBB030', err:'#E04848',
+  openBg:'#0A2D1A', openTx:'#32C870', closeBg:'#2D0A0A', closeTx:'#E04848',
+  limitBg:'#2D1D00', limitTx:'#EBB030',
 };
 const LIGHT = {
-  bg: "#EBF1F8", surface: "#FFFFFF", lift: "#F4F8FC", border: "#D2E2EE",
-  text: "#152434", sub: "#527A8E", dim: "#B0C8D8", muted: "#F0F5FA",
-  accent: "#187A4C", hot: "#BD5420", warn: "#9E7010", err: "#B02020",
-  openBg: "#CCFAE0", openTx: "#0A5C3A", closeBg: "#FDE0E0", closeTx: "#8A1A1A",
-  limitBg: "#FEF0C4", limitTx: "#854000",
+  bg:'#EBF1F8', surface:'#FFFFFF', lift:'#F4F8FC', border:'#D2E2EE',
+  text:'#152434', sub:'#527A8E', dim:'#B0C8D8', muted:'#F0F5FA',
+  accent:'#6B4C8A', hot:'#9A6B1E', warn:'#9E7010', err:'#B02020',
+  openBg:'#CCFAE0', openTx:'#0A5C3A', closeBg:'#FDE0E0', closeTx:'#8A1A1A',
+  limitBg:'#FEF0C4', limitTx:'#854000',
 };
 const F = "system-ui,-apple-system,'Segoe UI',sans-serif";
 
+// Logo ships with a black background by design — it sits naturally on the
+// dark navy app surface. For the standalone deployment, drop logo-192.png
+// into your Vite project's /public folder. Falls back to a glyph in any
+// context where the file can't be served (e.g. Claude.ai artifact sandbox).
+function BrandMark({T,size=34}){
+  const [imgFailed,setImgFailed] = useState(false);
+  if(imgFailed){
+    return <div style={{width:size,height:size,borderRadius:size*0.28,background:`linear-gradient(135deg,#1B1025,#2A1840)`,border:`1px solid ${T.accent}44`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:size*0.44,flexShrink:0}}>≋</div>;
+  }
+  return <img src="/logo-192.png" alt="Blackmouth.AI" width={size} height={size} style={{borderRadius:size*0.28,flexShrink:0,objectFit:'cover',display:'block'}} onError={()=>setImgFailed(true)}/>;
+}
+
 // ── Constants ───────────────────────────────────────────────────────────────
-const TABS = ["AI Guide", "Dashboard", "My Waters", "Log", "Gear", "Regs", "History", "Settings"];
+const TABS = ["AI Guide","Dashboard","My Waters","Log","Gear","Regs","History"];
 const SPECIES = ["Chinook (King)","Coho (Silver)","Pink (Humpy)","Chum (Dog)","Sockeye (Red)",
   "Kokanee","Steelhead","Sea-run Cutthroat","Trout (Resident)","Largemouth Bass","Smallmouth Bass","Other"];
 const TECHNIQUES = ["Trolling","Mooching","Jigging","Drift Fishing","Casting – Spoon",
@@ -240,22 +201,38 @@ const NOAA_STA = [
   {id:'9448559',name:'Anacortes',lat:48.507,lng:-122.612},
   {id:'9449424',name:'Bellingham',lat:48.736,lng:-122.496},
 ];
+// Curated WA fishing ports — instant match, no network dependency.
 const WA_PORTS = [
-  {name:'Seattle, WA',lat:47.6062,lng:-122.3321},{name:'Edmonds, WA',lat:47.8107,lng:-122.3774},
-  {name:'Everett, WA',lat:47.9790,lng:-122.2021},{name:'Mukilteo, WA',lat:47.9446,lng:-122.3045},
-  {name:'Tacoma, WA',lat:47.2529,lng:-122.4443},{name:'Olympia, WA',lat:47.0379,lng:-122.9007},
-  {name:'Shelton, WA',lat:47.2154,lng:-123.1003},{name:'Bremerton, WA',lat:47.5673,lng:-122.6329},
-  {name:'Port Orchard, WA',lat:47.5401,lng:-122.6359},{name:'Poulsbo, WA',lat:47.7359,lng:-122.6468},
-  {name:'Gig Harbor, WA',lat:47.3309,lng:-122.5801},{name:'Port Townsend, WA',lat:48.1173,lng:-122.7604},
-  {name:'Sequim, WA',lat:48.0818,lng:-123.1095},{name:'Port Angeles, WA',lat:48.1181,lng:-123.4307},
-  {name:'Neah Bay, WA',lat:48.3681,lng:-124.6159},{name:'Forks, WA',lat:47.9504,lng:-124.3853},
-  {name:'La Push, WA',lat:47.9128,lng:-124.6357},{name:'Anacortes, WA',lat:48.5126,lng:-122.6127},
-  {name:'La Conner, WA',lat:48.3929,lng:-122.4965},{name:'Bellingham, WA',lat:48.7519,lng:-122.4787},
-  {name:'Blaine, WA',lat:48.9966,lng:-122.7459},{name:'Friday Harbor, WA',lat:48.5345,lng:-123.0167},
-  {name:'Coupeville, WA',lat:48.2202,lng:-122.6859},{name:'Oak Harbor, WA',lat:48.2932,lng:-122.6431},
-  {name:'Westport, WA',lat:46.8762,lng:-124.1041},{name:'Ilwaco, WA',lat:46.3046,lng:-124.0335},
-  {name:'Sekiu, WA',lat:48.2723,lng:-124.3434},{name:'Bellevue, WA',lat:47.6101,lng:-122.2015},
-  {name:'Renton, WA',lat:47.4829,lng:-122.2171},{name:'Des Moines, WA',lat:47.4018,lng:-122.3315},
+  {name:'Seattle, WA',lat:47.6062,lng:-122.3321},
+  {name:'Edmonds, WA',lat:47.8107,lng:-122.3774},
+  {name:'Everett, WA',lat:47.9790,lng:-122.2021},
+  {name:'Mukilteo, WA',lat:47.9446,lng:-122.3045},
+  {name:'Tacoma, WA',lat:47.2529,lng:-122.4443},
+  {name:'Olympia, WA',lat:47.0379,lng:-122.9007},
+  {name:'Shelton, WA',lat:47.2154,lng:-123.1003},
+  {name:'Bremerton, WA',lat:47.5673,lng:-122.6329},
+  {name:'Port Orchard, WA',lat:47.5401,lng:-122.6359},
+  {name:'Poulsbo, WA',lat:47.7359,lng:-122.6468},
+  {name:'Gig Harbor, WA',lat:47.3309,lng:-122.5801},
+  {name:'Port Townsend, WA',lat:48.1173,lng:-122.7604},
+  {name:'Sequim, WA',lat:48.0818,lng:-123.1095},
+  {name:'Port Angeles, WA',lat:48.1181,lng:-123.4307},
+  {name:'Neah Bay, WA',lat:48.3681,lng:-124.6159},
+  {name:'Forks, WA',lat:47.9504,lng:-124.3853},
+  {name:'La Push, WA',lat:47.9128,lng:-124.6357},
+  {name:'Anacortes, WA',lat:48.5126,lng:-122.6127},
+  {name:'La Conner, WA',lat:48.3929,lng:-122.4965},
+  {name:'Bellingham, WA',lat:48.7519,lng:-122.4787},
+  {name:'Blaine, WA',lat:48.9966,lng:-122.7459},
+  {name:'Friday Harbor, WA',lat:48.5345,lng:-123.0167},
+  {name:'Coupeville, WA',lat:48.2202,lng:-122.6859},
+  {name:'Oak Harbor, WA',lat:48.2932,lng:-122.6431},
+  {name:'Westport, WA',lat:46.8762,lng:-124.1041},
+  {name:'Ilwaco, WA',lat:46.3046,lng:-124.0335},
+  {name:'Sekiu, WA',lat:48.2723,lng:-124.3434},
+  {name:'Bellevue, WA',lat:47.6101,lng:-122.2015},
+  {name:'Renton, WA',lat:47.4829,lng:-122.2171},
+  {name:'Des Moines, WA',lat:47.4018,lng:-122.3315},
   {name:'Steilacoom, WA',lat:47.1717,lng:-122.6018},
 ];
 function matchWaPort(input){
@@ -272,6 +249,9 @@ const WX = {
   71:['🌨','Lt Snow'],73:['❄️','Snow'],80:['🌦','Showers'],81:['🌧','Showers'],95:['⛈','Storms'],
 };
 
+// ── Washington Marine Areas — verified against wdfw.wa.gov/fishing/locations/marine-areas
+// and WDFW's own "major fishing areas" listings + salmon fishing preview blog. Spot-level
+// aliases (bays/points/heads) are sourced from those pages, not guessed from general geography.
 const MARINE_AREAS = [
   {num:'1',   title:'Marine Area 1 - Ilwaco',                                    slug:'ilwaco',          lat:46.305, lng:-124.034, aliases:['ilwaco']},
   {num:'2',   title:'Marine Area 2 - Westport-Ocean Shores',                     slug:'westport-ocean-shores', lat:46.876, lng:-124.114, aliases:['westport','ocean shores']},
@@ -314,19 +294,23 @@ function marineAreaUrl(a){ return `https://wdfw.wa.gov/fishing/locations/marine-
 function matchMarineArea(input){
   if(!input) return null;
   const raw = input.toLowerCase().trim();
+  // "Marine Area 10", "MA 10", "MA-10", "Puget Sound Marine Area 10", "area 10", "#10"
   let m = raw.match(/(?:marine\s*area|puget\s*sound\s*marine\s*area|\bma\b|\barea\b|#)\s*[-_]?\s*(\d{1,2})(?:\s*[-_.\/]\s*(\d{1,2}))?/i);
+  // "MA10", "MA8-1" glued with no boundary before the digit
   if(!m) m = raw.match(/\bma[-_]?(\d{1,2})(?:[-_.\/](\d{1,2}))?\b/i);
   if(m){
     const num = m[2] ? `${m[1]}-${m[2]}` : m[1];
     const found = MARINE_AREAS.find(a=>a.num===num) || MARINE_AREAS.find(a=>a.num===m[1]);
     if(found) return found;
   }
+  // bare number, only if that's the whole input (avoid false positives elsewhere)
   if(/^\d{1,2}([-_.\/]\d{1,2})?$/.test(raw)){
     const parts = raw.split(/[-_.\/]/);
     const num = parts.length>1 ? parts.join('-') : parts[0];
     const found = MARINE_AREAS.find(a=>a.num===num) || MARINE_AREAS.find(a=>a.num===parts[0]);
     if(found) return found;
   }
+  // name / alias substring match — "Hood Canal", "Seattle", "San Juan Islands", etc.
   for(const a of MARINE_AREAS){
     if(a.aliases.some(al=>raw.includes(al))) return a;
   }
@@ -336,20 +320,39 @@ function matchMarineArea(input){
 // ── Utilities ───────────────────────────────────────────────────────────────
 function inferWaterType(str) {
   const s = str.toLowerCase();
+  // Explicit qualifier words are the strongest signal and must win over any
+  // marine-area alias overlap. Many WA rivers/creeks share a name with the
+  // bay or inlet they empty into (Dosewallips, Duckabush, Skokomish, Elwha,
+  // Nisqually, Quilcene all name both a river AND a Hood Canal/Sound shoreline
+  // spot) — if the user typed "river"/"creek"/etc, trust that over any alias
+  // list, otherwise "Dosewallips River" would incorrectly resolve to MA12.
+  const hasWord = list => list.some(k=>new RegExp(`\\b${k}\\b`).test(s));
+  if (hasWord(["river","creek","stream","fork","brook"])) return "River / Stream";
+  if (hasWord(["lake","lk","reservoir","pond"])) return "Lake";
+
   if (matchMarineArea(str)) return "Saltwater";
   if (["puget sound","sound","strait","canal","saratoga","commencement","quartermaster",
     "dyes","liberty bay","port orchard","possession","juan de fuca","rosario",
     "bellingham","padilla","fidalgo","tulalip","hammersley","totten","eld","budd","henderson"
   ].some(k=>s.includes(k))) return "Saltwater";
-  if (["river","creek","stream","fork","r.","snoqualmie","skykomish","skagit","nooksack",
+  if (["snoqualmie","skykomish","skagit","nooksack",
     "stillaguamish","puyallup","green river","cedar","carbon","cowlitz","chehalis","hoh",
     "sol duc","quinault","dosewallips","duckabush","skokomish","dungeness","elwha","methow",
     "wenatchee","columbia","yakima","klickitat"
   ].some(k=>s.includes(k))) return "River / Stream";
-  if (["lake","lk","reservoir","pond","sammamish","washington","union","chelan","roosevelt",
+  if (["sammamish","washington","union","chelan","roosevelt",
     "banks","moses","potholes","kapowsin","tapps","serene","goodwin"
   ].some(k=>s.includes(k))) return "Lake";
   return "";
+}
+// Water names that are genuinely ambiguous between a river and the marine
+// area/bay it empties into — used to surface a disambiguation note in the UI
+// rather than silently guessing. Also flags waters where regulations commonly
+// differ between the tidal/mouth section and the upper freshwater section.
+const AMBIGUOUS_RIVER_MARINE_NAMES = ['dosewallips','duckabush','skokomish','elwha','nisqually','quilcene','dungeness','hoh','deschutes'];
+function isAmbiguousWaterName(str){
+  const s=(str||'').toLowerCase();
+  return AMBIGUOUS_RIVER_MARINE_NAMES.some(n=>s.includes(n));
 }
 function nearestNOAA(lat,lng) {
   return NOAA_STA.reduce((b,s)=>{const d=Math.hypot(s.lat-lat,s.lng-lng);return d<b.d?{s,d}:b},{s:NOAA_STA[0],d:Infinity}).s;
@@ -369,7 +372,7 @@ function getTargeted(o){
   return [];
 }
 
-// ── Storage: Firestore (signed in) > localStorage ────────────────────────────
+// ── Storage: Firestore (signed in) > Claude's window.storage > localStorage ──
 const stor = {
   async get(k){
     if(currentUid && isFirebaseConfigured()){
@@ -378,70 +381,98 @@ const stor = {
         if(val!=null){ try{localStorage.setItem(k,val);}catch{} return {value:val}; }
       }catch{}
     }
+    if(typeof window!=='undefined' && window.storage){
+      try{const r=await window.storage.get(k); if(r) return r;}catch{}
+    }
     try{const v=localStorage.getItem(k);return v?{value:v}:null;}catch{return null;}
   },
   async set(k,v){
     try{localStorage.setItem(k,v);}catch{} // instant local cache regardless of backend
     if(currentUid && isFirebaseConfigured()){
-      try{ await fsSet(currentUid,k,v); }catch{}
+      try{ await fsSet(currentUid,k,v); return; }catch{}
+    }
+    if(typeof window!=='undefined' && window.storage){
+      try{await window.storage.set(k,v);}catch{}
     }
   }
 };
 async function load(k){try{const r=await stor.get(k);return r?JSON.parse(r.value):null;}catch{return null;}}
 async function save(k,v){try{await stor.set(k,JSON.stringify(v));}catch{}}
 
-// ── API (routes through our own backend proxy — never calls Anthropic directly from the browser) ──
+// ── API ─────────────────────────────────────────────────────────────────────
 async function askClaude(messages, system, {maxTokens=1000,webSearch=false}={}) {
-  const apiKey = getApiKey();
-  if(!apiKey){
-    throw new Error('Add your Anthropic API key in the Settings tab to use the AI Guide.');
-  }
   try{
+    if(!isAnthropicConfigured()){
+      throw new Error('No Anthropic API key configured for this deployment. Set VITE_ANTHROPIC_API_KEY at build time — see setup notes at the bottom of this file.');
+    }
+    // Remove toolLabel field before sending to API — it's only for tracking which tool generated responses
     const cleanMessages = messages.map(m => {
       const {toolLabel, ...cleaned} = m;
       return cleaned;
     });
-    const body={max_tokens:maxTokens,system,messages:cleanMessages,webSearch};
+    const body={model:'claude-sonnet-4-20250514',max_tokens:maxTokens,system,messages:cleanMessages};
+    if(webSearch) body.tools=[{type:'web_search_20250305',name:'web_search'}];
 
+    const headers={'Content-Type':'application/json'};
+    // Inside Claude.ai artifacts, calls are proxied+authenticated automatically.
+    // Standalone, send the real key directly from the browser (see the notes
+    // above ANTHROPIC_API_KEY — this is a real tradeoff of a serverless setup).
+    if(!isInClaudeArtifact()){
+      headers['x-api-key']=ANTHROPIC_API_KEY;
+      headers['anthropic-version']='2023-06-01';
+      headers['anthropic-dangerous-direct-browser-access']='true';
+    }
+
+    // Web search requests take longer — give them more time
     const timeoutMs = webSearch ? 60000 : 30000;
     const controller = new AbortController();
     const timeout = setTimeout(()=>controller.abort(), timeoutMs);
-
+    
     let res;
     try{
-      res=await fetch('/api/claude',{
+      res=await fetch('https://api.anthropic.com/v1/messages',{
         method:'POST',
-        headers:{'Content-Type':'application/json','x-api-key':apiKey},
+        headers,
         body:JSON.stringify(body),
         signal: controller.signal,
       });
     }catch(fetchErr){
       clearTimeout(timeout);
+      // Network-level errors (DNS, timeout, etc)
       if(fetchErr.name==='AbortError'){
-        throw new Error(`Request timed out (${timeoutMs/1000}s) — try again in a moment.`);
+        throw new Error(`Request timed out (${timeoutMs/1000}s) — ${webSearch?'web search is slow or':'Claude is'} unavailable. Try again in a moment.`);
+      }
+      if(fetchErr.message.includes('network')){
+        throw new Error('Network connection error — check your internet and try again.');
       }
       throw new Error(`Network error: ${fetchErr.message}`);
     }
+    
     clearTimeout(timeout);
-
+    
     if(!res.ok){
       let errMsg=`HTTP ${res.status}`;
       try{
         const errData=await res.json();
-        errMsg=errData?.error?.message || errData?.error || errMsg;
+        errMsg=errData?.error?.message || errMsg;
       }catch{
         errMsg=`${res.status} ${res.statusText}`;
       }
       throw new Error(errMsg);
     }
-
+    
     const d=await res.json();
+    
+    // Check for error response from API
     if(d.error){
-      throw new Error(typeof d.error==='string'?d.error:(d.error.message || JSON.stringify(d.error)));
+      throw new Error(d.error.message || JSON.stringify(d.error));
     }
+    
+    // Check for content in response
     if(!d.content || !Array.isArray(d.content) || d.content.length===0){
       throw new Error('Empty response from Claude');
     }
+    
     const text=(d.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
     if(!text || text.trim()===''){
       throw new Error('No text in response from Claude');
@@ -449,16 +480,23 @@ async function askClaude(messages, system, {maxTokens=1000,webSearch=false}={}) 
     return text;
   }catch(e){
     if(e.name==='AbortError'){
-      throw new Error(`Request timed out — try again in a moment.`);
+      const timeoutMs = webSearch ? 60000 : 30000;
+      throw new Error(`Request timed out (${timeoutMs/1000}s) — ${webSearch?'web search is slow or':'Claude is'} unavailable. Try again in a moment.`);
     }
     if(e.message.includes('Failed to fetch')){
       throw new Error('Network error — check your connection and try again.');
     }
-    throw e;
+    if(e.message.includes('Network error')){
+      throw e; // re-throw our own network errors as-is
+    }
+    if(e.message.includes('fetch')){
+      throw new Error(`Network error: ${e.message}`);
+    }
+    throw new Error(`Claude API error: ${e.message}`);
   }
 }
 
-// ── Media analysis for Log photo/video upload ────────────────────────────────
+// ── Media analysis for Log photo/video upload (confirmatory — user approves before it fills the form) ──
 async function analyzeFishPhoto(base64Data, mediaType){
   const messages=[{role:'user',content:[
     {type:'image',source:{type:'base64',media_type:mediaType,data:base64Data}},
@@ -510,17 +548,21 @@ async function fetchWeather(lat,lng){
 }
 async function fetchTides(lat,lng){
   try{
+    // Try NOAA first (more detailed predictions)
     const sta=nearestNOAA(lat,lng);
     const t=new Date(),t2=new Date(t.getTime()+86400000);
     const fmt=d=>`${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
-    const r=await fetch(`https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?station=${sta.id}&product=predictions&datum=MLLW&time_zone=lst/ldt&interval=hilo&units=english&application=cascadia&format=json&begin_date=${fmt(t)}&end_date=${fmt(t2)}`);
+    const r=await fetch(`https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?station=${sta.id}&product=predictions&datum=MLLW&time_zone=lst/ldt&interval=hilo&units=english&application=blackmouth-ai&format=json&begin_date=${fmt(t)}&end_date=${fmt(t2)}`);
     const d=await r.json();
     if(d.predictions && d.predictions.length>0) return{station:sta.name,predictions:d.predictions};
   }catch{}
+  
+  // Fallback: World Tides API (free tier, covers any location)
   try{
     const r=await fetch(`https://www.worldtides.info/api/v3/predictions?lat=${lat}&lng=${lng}&station=nearest&length=172800&step=3600&format=json`);
     const d=await r.json();
     if(d.heights && d.heights.length>0){
+      // Convert World Tides format to match NOAA's simpler format
       const predictions=d.heights.map((h,i)=>({
         t:new Date(d.timestamps[i]*1000).toLocaleString('en-US',{timeZone:'America/Los_Angeles',hour12:false}),
         v:h.toFixed(2)
@@ -528,8 +570,11 @@ async function fetchTides(lat,lng){
       return{station:`${d.station?.name||'Current Location'} (World Tides)`,predictions};
     }
   }catch{}
+  
   return null;
 }
+// fetchDailyIntel removed — redundant automatic AI call duplicating what
+// AI Guide already does on-demand. Weather/tides remain in doRefresh below.
 
 // ── Style helpers ───────────────────────────────────────────────────────────
 const cardOf=(T,extra={})=>({background:T.surface,borderRadius:14,padding:16,border:`1px solid ${T.border}`,...extra});
@@ -571,16 +616,18 @@ function StatusPill({status,T}){
   const s=m[status]||m.unknown;
   return <span style={{fontSize:10,background:s.bg,color:s.tx,borderRadius:5,padding:'2px 8px',fontFamily:F,fontWeight:'600',letterSpacing:.3,whiteSpace:'nowrap'}}>{s.l}</span>;
 }
+// ToolCard removed — was only used by the three separate planning tools,
+// now merged into one TripPlannerTool below.
 
 // ══════════════════════════════════════════════════════════════════════════════
-function CascadiaApp({syncStatus,userEmail,onSignOut}){
+function BlackmouthApp({syncStatus,onSignOut}){
   const [dark,setDark]         = useState(true);
   const [tab,setTab]           = useState(0);
   const [outings,setOutings]   = useState([]);
   const [gear,setGear]         = useState([]);
-  const [configs,setConfigs]   = useState([]);
+  const [configs,setConfigs]   = useState([]); // rod+reel pairings
   const [boats,setBoats]       = useState([]);
-  const [lineups,setLineups]   = useState([]);
+  const [lineups,setLineups]   = useState([]); // starting lineups (species/technique/water/boat contexts)
   const [chat,setChat]         = useState([]);
   const [favWaters,setFW]      = useState([]);
   const [homePort,setHP]       = useState(null);
@@ -608,7 +655,7 @@ function CascadiaApp({syncStatus,userEmail,onSignOut}){
     })();
   },[]);
 
-  const doRefresh = async (hp) => {
+  const doRefresh = async (hp,fw) => {
     setRef(true);
     const fresh = {date:todayStr()};
     if(hp){
@@ -625,7 +672,7 @@ function CascadiaApp({syncStatus,userEmail,onSignOut}){
   useEffect(()=>{
     if(!loaded) return;
     if(dailyData && dailyData.date===todayStr()) return;
-    doRefresh(homePort);
+    doRefresh(homePort,favWaters);
   },[loaded]); // eslint-disable-line
 
   const saveOutings = v=>{setOutings(v);save('outings',v);};
@@ -639,11 +686,11 @@ function CascadiaApp({syncStatus,userEmail,onSignOut}){
 
   const handleSetHP = async portData=>{
     setHP(portData); save('hp',portData);
-    doRefresh(portData);
+    doRefresh(portData,favWaters);
   };
 
   if(!loaded) return(
-    <div style={{background:DARK.bg,height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',color:DARK.sub,fontFamily:F,fontSize:15}}>Loading Cascadia…</div>
+    <div style={{background:DARK.bg,height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',color:DARK.sub,fontFamily:F,fontSize:15}}>Loading Blackmouth…</div>
   );
 
   if(waterDetail) return(
@@ -654,20 +701,26 @@ function CascadiaApp({syncStatus,userEmail,onSignOut}){
 
   return(
     <div style={{fontFamily:F,background:T.bg,minHeight:'100vh',color:T.text}}>
-      <style>{`@media print { .cascadia-shell { display: none !important; } }`}</style>
-      <div className="cascadia-shell">
+      <style>{`@media print { .blackmouth-shell { display: none !important; } }`}</style>
+      <div className="blackmouth-shell">
+      {/* Header */}
       <div style={{background:T.surface,borderBottom:`1px solid ${T.border}`,position:'sticky',top:0,zIndex:10}}>
         <div style={{maxWidth:820,margin:'0 auto',padding:'12px 16px 0'}}>
           <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
-            <div style={{width:34,height:34,borderRadius:10,background:`linear-gradient(135deg,${T.accent},${T.hot})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:15,flexShrink:0}}>≋</div>
+            <BrandMark T={T} size={34}/>
             <div style={{flex:1}}>
-              <div style={{fontSize:17,fontWeight:'700',color:T.text,letterSpacing:-.2,fontFamily:F}}>Cascadia Fishing</div>
+              <div style={{fontSize:17,fontWeight:'700',color:T.text,letterSpacing:-.2,fontFamily:F}}>Blackmouth<span style={{color:T.hot}}>.AI</span></div>
               <div style={{fontSize:10,color:T.sub,letterSpacing:1,fontFamily:F,textTransform:'uppercase'}}>{monthName()} {thisYear()} · {currentSeason()}{homePort?` · ${homePort.name}`:''}</div>
             </div>
             <div style={{display:'flex',alignItems:'center',gap:6}}>
-              {syncStatus==='synced'&&<span title={`Synced as ${userEmail}`} style={{fontSize:10,color:T.accent,fontFamily:F}}>☁ Synced</span>}
-              {syncStatus==='local'&&<span title="Saved to this browser only" style={{fontSize:10,color:T.sub,fontFamily:F}}>📱 Local only</span>}
+              {syncStatus==='synced'&&<span title="Synced to your account" style={{fontSize:10,color:T.accent,fontFamily:F}}>☁ Synced</span>}
+              {syncStatus==='local'&&<span title="Saved to this Claude account only" style={{fontSize:10,color:T.sub,fontFamily:F}}>📱 Local only</span>}
+              {isAnthropicConfigured()
+                ? <span title="AI Guide is connected and ready" style={{fontSize:10,color:T.accent,fontFamily:F}}>🤖 AI Ready</span>
+                : <span title="No Anthropic API key configured for this deployment — AI Guide, Trip Planner, and photo analysis won't work until VITE_ANTHROPIC_API_KEY is set at build time. See setup notes at the bottom of the source file." style={{fontSize:10,color:T.err,fontFamily:F,cursor:'help'}}>⚠ No AI Key</span>
+              }
               <button onClick={toggleDark} style={{...btnOf(T,'ghost'),padding:'5px 11px',fontSize:12}}>{dark?'☀️ Light':'🌑 Dark'}</button>
+              {syncStatus==='synced'&&onSignOut&&<button onClick={onSignOut} style={{...btnOf(T,'ghost'),padding:'5px 9px',fontSize:11}}>Sign out</button>}
             </div>
           </div>
           <div style={{display:'flex',overflowX:'auto',gap:2,scrollbarWidth:'none'}}>
@@ -682,11 +735,10 @@ function CascadiaApp({syncStatus,userEmail,onSignOut}){
         {tab===0&&<AIGuideTab outings={outings} gear={gear} configs={configs} boats={boats} lineups={lineups} favWaters={favWaters} chat={chat} onSaveChat={saveChat} preFill={aiPreFill} onClearPreFill={()=>setAPF('')} onPrint={(title,body)=>setPrintJob({title,body})} T={T}/>}
         {tab===1&&<DashboardTab outings={outings} favWaters={favWaters} homePort={homePort} dailyData={dailyData} onSetHP={handleSetHP} onWaterClick={setWD} onTabChange={setTab} T={T}/>}
         {tab===2&&<MyWatersTab favWaters={favWaters} onSave={saveFW} onWaterClick={setWD} T={T}/>}
-        {tab===3&&<LogOuting outings={outings} gear={gear} onSave={saveOutings} T={T}/>}
+        {tab===3&&<LogOuting outings={outings} gear={gear} onSave={saveOutings} onViewHistory={()=>setTab(6)} T={T}/>}
         {tab===4&&<GearManager gear={gear} onSave={saveGear} configs={configs} onSaveConfigs={saveConfigs} boats={boats} onSaveBoats={saveBoats} lineups={lineups} onSaveLineups={saveLineups} favWaters={favWaters} T={T}/>}
         {tab===5&&<RegsAlerts T={T}/>}
         {tab===6&&<History outings={outings} onSave={saveOutings} T={T}/>}
-        {tab===7&&<SettingsTab syncStatus={syncStatus} userEmail={userEmail} onSignOut={onSignOut} T={T}/>}
       </div>
       </div>
       <PrintOverlay data={printJob} onDone={()=>setPrintJob(null)}/>
@@ -694,55 +746,7 @@ function CascadiaApp({syncStatus,userEmail,onSignOut}){
   );
 }
 
-function SettingsTab({syncStatus,userEmail,onSignOut,T}){
-  const storedKey = getApiKey();
-  const [key,setKey]=useState(storedKey);
-  const [status,setStatus]=useState(storedKey ? 'saved' : 'empty'); // 'saved' | 'unsaved' | 'empty'
-
-  const maskedKey = storedKey ? `${storedKey.slice(0,10)}…${storedKey.slice(-4)}` : '';
-
-  const handleChange=(v)=>{
-    setKey(v);
-    setStatus(v.trim()===getApiKey() ? (v.trim()?'saved':'empty') : 'unsaved');
-  };
-  const save=()=>{
-    setApiKey(key.trim());
-    setStatus(key.trim() ? 'saved' : 'empty');
-  };
-
-  return(
-    <div style={{display:'flex',flexDirection:'column',gap:14}}>
-      <div style={cardOf(T)}>
-        <SectionHead T={T}>Your Anthropic API Key</SectionHead>
-        <div style={{fontSize:13,color:T.sub,marginBottom:10,lineHeight:1.6,fontFamily:F}}>
-          The AI Guide, Trip Planner, and photo ID features use your own Anthropic API key — usage bills to your own Anthropic account, not anyone else's. Get a key at{' '}
-          <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" style={{color:T.accent}}>console.anthropic.com</a>. Your key is stored only in this browser — it's never sent anywhere except directly to Anthropic via our small relay.
-        </div>
-        <div style={{display:'flex',gap:8}}>
-          <input type="password" value={key} onChange={e=>handleChange(e.target.value)} placeholder="sk-ant-…" style={{...inpOf(T),flex:1}}/>
-          <button onClick={save} disabled={status!=='unsaved'} style={{...btnOf(T,'green'),opacity:status==='unsaved'?1:0.5,cursor:status==='unsaved'?'pointer':'default'}}>Save</button>
-        </div>
-        <div style={{marginTop:10,fontSize:12,fontFamily:F}}>
-          {status==='saved'&&<span style={{color:T.accent}}>✓ Saved — currently using key ending in …{storedKey.slice(-4)}</span>}
-          {status==='unsaved'&&<span style={{color:T.warn}}>Not saved yet — click Save to apply this key on this device.</span>}
-          {status==='empty'&&<span style={{color:T.sub}}>No key saved yet on this device.</span>}
-        </div>
-      </div>
-      <div style={cardOf(T)}>
-        <SectionHead T={T}>Account</SectionHead>
-        {syncStatus==='synced'?(
-          <>
-            <div style={{fontSize:13,color:T.text,marginBottom:10,fontFamily:F}}>Signed in as <strong>{userEmail}</strong>. Your gear, boats, outings, and waters sync across every device you sign into.</div>
-            <button onClick={onSignOut} style={btnOf(T,'ghost')}>Sign Out</button>
-          </>
-        ):(
-          <div style={{fontSize:13,color:T.sub,fontFamily:F,lineHeight:1.6}}>Not signed in — your data is saved only to this browser. Sign in (see the sign-in screen) to sync across devices.</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
+// ── Print Overlay (drives browser "Save as PDF" via native print) ───────────
 function PrintOverlay({data,onDone}){
   useEffect(()=>{
     if(!data) return;
@@ -755,14 +759,38 @@ function PrintOverlay({data,onDone}){
   if(!data) return null;
   return (
     <div className="print-only" style={{position:'fixed',top:0,left:0,right:0,minHeight:'100vh',background:'#fff',color:'#16212c',padding:'48px 56px',zIndex:9999,fontFamily:'Georgia,serif'}}>
-      <div style={{fontSize:11,letterSpacing:2,textTransform:'uppercase',color:'#C2682B',marginBottom:6}}>Cascadia Fishing Assistant</div>
-      <h1 style={{fontSize:22,margin:'0 0 4px',borderBottom:'2px solid #C2682B',paddingBottom:10}}>{data.title}</h1>
+      <div style={{fontSize:11,letterSpacing:2,textTransform:'uppercase',color:'#A9762A',marginBottom:6}}>Blackmouth.AI</div>
+      <h1 style={{fontSize:22,margin:'0 0 4px',borderBottom:'2px solid #A9762A',paddingBottom:10}}>{data.title}</h1>
       <div style={{fontSize:12,color:'#667',marginBottom:24}}>{new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})}</div>
       <div style={{whiteSpace:'pre-wrap',fontSize:14,lineHeight:1.75}}>{data.body}</div>
       <div style={{marginTop:36,fontSize:11,color:'#889',borderTop:'1px solid #ddd',paddingTop:12}}>
-        Generated by Cascadia Fishing Assistant. Always verify current regulations at wdfw.wa.gov/fishing/rules or 1-800-902-2474.
+        Generated by Blackmouth.AI. Always verify current regulations at wdfw.wa.gov/fishing/rules or 1-800-902-2474.
       </div>
     </div>
+  );
+}
+
+// ── Home Tab ────────────────────────────────────────────────────────────────
+// Lightweight tide curve — no charting library needed, just an SVG path
+// interpolated through the day's high/low points via a Catmull-Rom-ish curve.
+function TideCurve({tides,T}){
+  if(!tides||tides.length<2) return null;
+  const W=280,H=56,PAD=8;
+  const toMinutes=t=>{ const m=t.match(/(\d+):(\d+)\s*(AM|PM)?/i); if(!m) return null; let h=parseInt(m[1]),mi=parseInt(m[2]); if(m[3]){ if(/PM/i.test(m[3])&&h!==12) h+=12; if(/AM/i.test(m[3])&&h===12) h=0; } return h*60+mi; };
+  const pts=tides.map(p=>({x:toMinutes(p.t.split(' ')[1]||p.t), y:parseFloat(p.v)})).filter(p=>p.x!=null);
+  if(pts.length<2) return null;
+  const minY=Math.min(...pts.map(p=>p.y)), maxY=Math.max(...pts.map(p=>p.y));
+  const range=maxY-minY||1;
+  const sx=x=>PAD+(x/1440)*(W-PAD*2);
+  const sy=y=>H-PAD-((y-minY)/range)*(H-PAD*2);
+  const d=pts.map((p,i)=>`${i===0?'M':'L'}${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(' ');
+  const now=new Date(); const nowMin=now.getHours()*60+now.getMinutes();
+  return(
+    <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} style={{marginBottom:8,display:'block'}}>
+      <path d={d} fill="none" stroke={T.accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+      {pts.map((p,i)=>(<circle key={i} cx={sx(p.x)} cy={sy(p.y)} r="2.5" fill={T.accent}/>))}
+      {nowMin>=0&&nowMin<=1440&&<line x1={sx(nowMin)} y1={PAD-2} x2={sx(nowMin)} y2={H-PAD+2} stroke={T.hot} strokeWidth="1.5" strokeDasharray="3,3"/>}
+    </svg>
   );
 }
 
@@ -778,12 +806,14 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
     if(!portInput.trim()) return;
     setPErr('');
     setGeo(true);
+    // 1. Try curated local list first — instant, no network needed.
     const local = matchWaPort(portInput);
     if(local){
       onSetHP(local);
       setGeo(false); setPI('');
       return;
     }
+    // 2. Fall back to live geocoding for anything not in the table.
     try{
       const r = await geocode(portInput.trim());
       if(r){ onSetHP(r); setPI(''); }
@@ -832,6 +862,7 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
 
   return(
     <div style={{display:'flex',flexDirection:'column',gap:16}}>
+      {/* Stats */}
       <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10}}>
         {[{l:'Outings',v:outings.length,big:true},{l:'Fish Caught',v:totalCatch,big:true},{l:'Top Spot',v:topSpot}].map(s=>(
           <div key={s.l} style={{...cardOf(T),textAlign:'center',padding:'12px 8px'}}>
@@ -841,10 +872,12 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
         ))}
       </div>
 
+      {/* Home port setup */}
       {!homePort&&(
         <div style={cardOf(T)}>
           <SectionHead T={T}>Set Your Home Port</SectionHead>
           <div style={{fontSize:13,color:T.sub,marginBottom:12,fontFamily:F}}>Enter your home port for live weather, tides, and local intel.</div>
+          <div style={{fontSize:11,color:T.dim,marginBottom:10,fontFamily:F}}>Your data saves privately to your own Claude account — sign in for it to stick between visits.</div>
           <div style={{display:'flex',gap:8}}>
             <input value={portInput} onChange={e=>setPI(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleSetPort()} placeholder="e.g. Everett, Port Townsend, Anacortes" style={{...inpOf(T),flex:1}}/>
             <button onClick={handleSetPort} disabled={geocoding||!portInput.trim()} style={{...btnOf(T),opacity:geocoding?0.6:1,whiteSpace:'nowrap'}}>{geocoding?'Finding…':'Set Port'}</button>
@@ -853,12 +886,13 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
         </div>
       )}
       {homePort&&(
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
+        <div style={{...cardOf(T),display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,padding:'12px 16px'}}>
           <span style={{fontSize:11,color:T.sub,fontFamily:F}}>Home port: <strong style={{color:T.text}}>{homePort.name}</strong></span>
           <button onClick={()=>{setPI('');setPErr('');onSetHP(null);}} style={{...btnOf(T,'ghost'),padding:'4px 10px',fontSize:11}}>Change</button>
         </div>
       )}
 
+      {/* Weather + Tides */}
       {(wx||todayTides.length>0)&&(
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
           {wx&&(
@@ -877,6 +911,7 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
           {todayTides.length>0&&(
             <div style={cardOf(T)}>
               <div style={{fontSize:10,color:T.sub,letterSpacing:1,textTransform:'uppercase',marginBottom:8,fontFamily:F}}>Tides · {dailyData?.tides?.station}</div>
+              <TideCurve tides={todayTides} T={T}/>
               {todayTides.map((p,i)=>(
                 <div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:13,fontFamily:F,padding:'3px 0',borderBottom:i<todayTides.length-1?`1px solid ${T.border}`:'none'}}>
                   <span style={{color:p.type==='H'?T.accent:T.sub,fontWeight:'600'}}>{p.type==='H'?'High':'Low'}</span>
@@ -889,6 +924,7 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
         </div>
       )}
 
+      {/* My Waters compact */}
       {favWaters.length>0&&(
         <div style={cardOf(T)}>
           <SectionHead T={T}>My Waters</SectionHead>
@@ -924,6 +960,7 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
         </div>
       )}
 
+      {/* Season Intel */}
       <div style={cardOf(T)}>
         <SectionHead T={T}>{season} Intel</SectionHead>
         <div style={{display:'flex',flexDirection:'column',gap:10}}>
@@ -936,6 +973,7 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
         </div>
       </div>
 
+      {/* Current Forage */}
       <div style={{...cardOf(T),borderLeft:`3px solid ${T.accent}`}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline'}}>
           <SectionHead T={T}>Current Forage</SectionHead>
@@ -947,6 +985,7 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
         <div style={{fontSize:10,color:T.dim,marginTop:8,fontFamily:F}}>Approximate — varies year to year. Ask the AI Guide for what's locally relevant.</div>
       </div>
 
+      {/* Recent outings */}
       {recentOutings.length>0&&(
         <div style={cardOf(T)}>
           <SectionHead T={T}>Recent Outings</SectionHead>
@@ -972,12 +1011,16 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
   );
 }
 
+// ── AI Guide Tab ────────────────────────────────────────────────────────────
 function AIGuideTab({outings,gear,configs,boats,lineups,favWaters,chat,onSaveChat,preFill,onClearPreFill,onPrint,T}){
   const [input,setInput]     = useState('');
   const [loading,setLoading] = useState(false);
   const chatBoxRef           = useRef(null);
 
   useEffect(()=>{
+    // Scroll only the chat box itself — never the page. scrollIntoView() was
+    // scrolling every scrollable ancestor including the whole document, which
+    // is what caused the jolt-to-bottom-then-back-up behavior.
     if(chatBoxRef.current) chatBoxRef.current.scrollTop = chatBoxRef.current.scrollHeight;
   },[chat,loading]);
 
@@ -988,40 +1031,39 @@ function AIGuideTab({outings,gear,configs,boats,lineups,favWaters,chat,onSaveCha
   const buildSystem = ()=>
     `You are an expert salmon fishing guide for western Washington, Puget Sound, and the Salish Sea, with deep knowledge of mooching and trolling techniques. You have comprehensive familiarity with expertise from Salmon University (Tom Nelson), Buzz Ramsey, John Martinis, Bill Herzog, and WDFW guidance. You understand:
 
-MOOCHING: Cut-plug herring rigs, double-bevel cuts, the "jig dance" (tight, fast spin), proper hook placement (upper hook through gut cavity/gills), banana sinkers 2-6oz, mono leaders 20-30lb, depth cycles (gear/neutral rhythm), line counting ("pulls"), strike timing based on motor state.
+MOOCHING: Cut-plug herring rigs, double-bevel cuts, the "jig dance" (tight, fast spin), proper hook placement (upper hook through gut cavity/gills), banana sinkers 2-6oz, mono leaders 20-30lb, depth cycles (gear/neutral rhythm), line counting ("pulls"), strike timing based on motor state. You know mooching's origin in Seattle and why die-hards prefer its feel and finesse over trolling.
 
 TROLLING: Downrigger setup, motor mooching hybrids, diver trolling, trolling speed (1-2 mph for Chinook, faster for Coho), flasher/bait combos (Gibbs Race Racer standard), spoon selection (Little Cleo for trophy males), line stagger, current direction, thermocline hunting.
 
-SEASONAL PATTERNS: Blackmouth Dec-Apr, spring Chinook May-June (deep, cool water), summer Coho June-Aug, fall Chinook Sept-Oct.
+SEASONAL PATTERNS: Blackmouth Dec-Apr, spring Chinook May-June (deep, cool water), summer Coho June-Aug, fall Chinook Sept-Oct. You know spring tides push more fish than neap, that peak fishing is one hour before-to-after tide change, that sounder density and thermoclines reveal fish location.
 
-KEY LOCATIONS IN PUGET SOUND: Shilshole Bay, Mukilteo, Richmond Beach, Ballard Bridge, mid-channel deep structure, Admiralty Inlet, Haro Strait (San Juans), Hood Canal.
+KEY LOCATIONS IN PUGET SOUND: Shilshole Bay, Mukilteo, Richmond Beach (massive pink runs Aug), Ballard Bridge, mid-channel deep structure, Admiralty Inlet spring/fall Chinook, Haro Strait (San Juans), Hood Canal. You know tide rips, kelp beds, drop-offs, rocky structure as fish magnets.
 
-FISHFINDER EXPERTISE: The user runs a Garmin ECHOMAP UHD 73sv and a Simrad GO9 XSE. General sonar principles you apply: lower frequency (50-83kHz) = wider beam, deeper penetration — best for deep saltwater Chinook trolling. Higher frequency (200-800kHz+) = sharper detail, less depth — best for shallow lakes, bass, structure ID.
+EXPERT VOICES: You reference specific advice — Tom Nelson on herring brine/sharpness/scale integrity, Buzz Ramsey on flasher colors (chartreuse/cloudy, chrome/sunny), John Martinis on location specificity, gear choices from proven sources.
 
-FORAGE BASE EXPERTISE: Herring spawn Jan-Apr (peak Feb). Sand lance spawn Nov-Feb, active forage ~late April-early Nov, concentrate at Possession Bar, Point No Point, Mid-Channel Bank. Surf smelt spawn timing is beach-specific. Northern anchovy surged since 2015, thrive in warm water. Market squid migrate Neah Bay (late May) -> Port Angeles (Jun-Aug) -> Elliott Bay (Oct-Nov) -> South Sound (Dec-Jan). Coho eat more krill/amphipods than Chinook. Match lure SIZE to season, COLOR to dominant local forage, default to herring SCENT unless fishing rocky structure.
+FISHFINDER EXPERTISE: The user runs a Garmin ECHOMAP UHD 73sv (UHD ClearVü 800kHz down to 200ft, UHD SideVü 1200kHz/455kHz CHIRP out to 125ft each side, traditional CHIRP 150-240kHz high-wide plus 50/77/83/200kHz, LiveScope-compatible, LakeVü g3 inland charts) and a Simrad GO9 XSE (CHIRP Active Imaging 3-in-1 transducer — Med/High 455/800kHz CHIRP, SideScan, DownScan; or basic 83/200kHz skimmer depending on bundle; C-MAP Discover charts; HALO radar-ready). You give settings advice specific to these when relevant. General sonar principles you apply: lower frequency (50-83kHz) = wider beam, deeper penetration — best for deep saltwater Chinook trolling in 100-300+ft. Higher frequency (200-800kHz+/UHD/CHIRP high) = narrower beam, sharper detail, less depth — best for shallow lakes, bass, trout, structure ID. SideScan/SideVü excels at searching wide shallow flats and lake structure; less useful in deep open-water salmon trolling. DownScan/ClearVü is best for distinguishing suspended baitfish balls from individual salmon. Live/forward-looking sonar (LiveScope, ActiveTarget, MEGA Live) is increasingly used for salmon mooching/jigging to watch the lure work near a marked fish in real time, not just bass. You're also familiar with the competitive landscape — Lowrance (HDS Live/Pro flagship with ActiveTarget, Elite Ti2 midrange, Hook2 budget), Humminbird (SOLIX flagship with MEGA Imaging+/MEGA 360/MEGA Live, HELIX midrange — excellent shallow-water clarity, less depth penetration, popular for bass), Raymarine (Axiom/Axiom+ with RealVision 3D and DownVision/SideVision, Dragonfly compact/affordable for kayak and small boats) — so you can speak to any brand the user or a friend asks about, not just their own units.
 
-GEAR-AWARE RECOMMENDATIONS: The user catalogs rods, reels, lures, boats, and "starting lineups." Reason over this data when relevant — flag mismatched gear for the season, suggest lighter/heavier logged alternatives, flag old line.
+FORAGE BASE EXPERTISE (Salish Sea baitfish/squid/krill — use this to inform lure size, color, and scent, not just spot/timing advice): Herring spawn Jan-Apr (peak Feb), resident stocks stay inside year-round, migratory stocks (e.g. Cherry Point) leave and grow bigger; WDFW's bait fishery targets 1.5-year-olds as the angler-preferred size. Sand lance/candlefish spawn Nov-Feb then bury in sand until active as forage ~late April-early Nov; they're 35-75% of juvenile Chinook/coho diet in Puget Sound studies and concentrate at Possession Bar, Point No Point, Mid-Channel Bank, and eastern Strait of Juan de Fuca banks — fish bait/lures close to bottom over sand/gravel there. Surf smelt spawn timing is beach-specific (summer May-Aug, fall-winter Sept-Mar, or year-round depending on site). Northern anchovy were essentially absent before 2015, surged since, and thrive in warm water — expect more anchovy in warm years/areas (especially South Sound), less in cool ones; harbor seal data shows anchovy peak in spring. Market squid migrate through the season: Neah Bay (late May) -> Port Angeles (Jun-Aug) -> Elliott Bay/Seattle (Oct-Nov) -> Des Moines/Commencement Bay (late Nov-Dec) -> dispersed South Sound, peaking Dec-Jan; squid are real winter/early-spring Chinook forage, not just a pier-jigging curiosity, and may explain why purple/UV lures work well in that window. Coho eat far more krill/amphipods/crustacean larvae than Chinook do across every Salish Sea region studied; in the Strait of Juan de Fuca/San Juans that's krill+crustacean-larvae-dominant, in the Strait of Georgia it's amphipod-dominant. Regional summer Chinook diet differs sharply: Strait of Georgia is herring-dominant, Howe Sound splits herring/anchovy evenly, Haro Strait splits herring/sand lance evenly, Juan de Fuca runs ~70% herring. Practical translation: match lure SIZE to season (2-3in profiles when winter/early-spring bait is small, 3.5-4.25in standard in summer), match COLOR to the locally dominant forage (green/blue splatterback for candlefish, chrome/herring-pattern for herring, thicker-profile anchovy imitations, purple/UV for squid season), and default to herring SCENT unless fishing rocky structure where shrimp/krill scent outperforms. Don't force this into every answer — bring it up when it actually helps the size/color/scent question being asked.
+
+DIET CHANGE OVER TIME (the deeper story — know this for context-aware answers): An 80-year Chinook stomach-content comparison (Greentree et al. 2026, Fisheries Oceanography, published May 2026) comparing 2017-2022 modern data against studies from 1939-1941, 1957, and 1967-1968 reveals the forage base has shifted repeatedly and dramatically. Pacific sardines were significant Chinook prey in 1940-1941, were gone by the 1950s, and remain absent today — their population collapsed from ~1.8M metric tons in 2006 to ~28,000 metric tons currently. Anchovy were essentially absent from BC salmon diets before 2014; they now show up as important prey near Howe Sound for the first time in any recorded diet study. The anchovy surge was triggered by "The Blob" — the 2013-2016 northeast Pacific marine heatwave that warmed water 2-7°F above normal, simultaneously crashed cold-water forage species (herring, sand lance, capelin hit historic lows), and created warm-water conditions anchovy thrive in. The longer climate driver is the PDO (Pacific Decadal Oscillation), a ~60-year cycle: warm PDO phases favor sardines, cool PDO phases favor anchovy — the Wikipedia article on PDO explicitly notes that the 1997-1998 shift back to a cool phase brought "substantial changes in anchovy and sardine populations." We're now in a warming trend that has pushed anchovy into unprecedented dominance. CRITICAL CONSEQUENCE: A 2025 PNAS study (Mantua et al.) documented that anchovy-dominated diets are causing thiamine (Vitamin B1) deficiency in salmon because anchovy carry thiaminase — an enzyme that actively destroys B1 in the gut of whatever eats them. This killed an estimated 26-48% of endangered Sacramento winter-run Chinook fry in 2020-2021. Washington State's own State of Salmon website now states that Chinook eating "more anchovies rather than a balanced mix of animals... appears to cause premature death and illness." The same anchovy surge is happening in Puget Sound. When a user asks why return years have been disappointing despite "okay" ocean conditions, this is worth mentioning. The practical angling implication: a diverse spread that doesn't exclusively imitate anchovy may better match what healthy, actively feeding salmon are eating — and fish tuned to diverse prey may be more strike-prone than fish gorging on a single item.
+
+GEAR-AWARE RECOMMENDATIONS: The user catalogs rods, reels, lures, boats, and "starting lineups" (named rod+reel+tackle setups for a species/technique/water, fantasy-roster style). When relevant, reason over this data: if a logged rod/reel is heavier than the season calls for (e.g. a heavy Chinook stick set as the starter for small summer Coho), say so and suggest a lighter logged alternative if one exists in their gear. If both Chinook and Coho seasons are open at once, suggest a middle-ground rod/reel if one is logged. If line on a reel hasn't been replaced in a long time relative to how much it's used, flag it. If a boat is logged with "no ramp needed" or "electric-only" attributes, proactively mention it when the user asks about waters that match those constraints. Don't force this in — only bring it up when it's actually relevant to what's being asked.
 My Lineups: ${lineups.length?JSON.stringify(lineups.map(l=>({name:l.name,boatId:l.boatId,configIds:l.configIds}))):'none set up yet'}
 My Rod+Reel Configs: ${configs.length?JSON.stringify(configs):'none set up yet'}
 My Boats: ${boats.length?JSON.stringify(boats):'none logged'}
 
-The user has 15+ years serious salmon experience. Primary: salmon (saltwater), trout (freshwater). Skip basics unless asked.
+The user is 35 with 15+ years serious salmon experience. Primary: salmon (saltwater), trout (freshwater). Skip basics unless asked.
 
 Season: ${currentSeason()}. Month: ${monthName()} ${thisYear()}.
 Favorite waters: ${favWaters.map(w=>w.name).join(', ')||'none listed'}.
 Outings (${outings.length} logged): ${JSON.stringify(outings.slice(0,12))}
 Gear: ${JSON.stringify(gear.slice(0,8))}
 
-CRITICAL: Keep responses SHORT and DIRECT. 1-2 sentences max for answers. Bullet points, tables, or brief lists only when clarity demands it. No fluff.
+CRITICAL: Keep responses SHORT and DIRECT. 1-2 sentences max for answers. Bullet points, tables, or brief lists only when clarity demands it. No fluff or explanations unless asked.
 
-If user wants more detail, they'll ask "tell me more". Default to brevity. Expert to expert.
+If user wants more detail, they'll ask "tell me more" or "explain X" — then expand. But default to brevity. Expert to expert.
 
 Be specific: use WDFW marine area numbers, name specific spots, flag mark-selective/hatchery/size rules. Use web search for current WDFW regulations, creel data, and conditions. Verify: wdfw.wa.gov.`;
-
- // Cap how much chat history gets resent to the API on each question — keeps
-  // per-question cost predictable as a conversation grows. The FULL history is
-  // still saved and shown in the UI; this only trims what's sent to Claude.
-  const MAX_HISTORY_MESSAGES = 16; // ~8 question/answer pairs of recent context
 
   const send = async(msg,toolLabel)=>{
     const text=(msg||input).trim();
@@ -1030,9 +1072,8 @@ Be specific: use WDFW marine area numbers, name specific spots, flag mark-select
     const newH=[...chat,userMsg];
     onSaveChat(newH);
     setInput('');setLoading(true);
-    const trimmedForApi = newH.length>MAX_HISTORY_MESSAGES ? newH.slice(-MAX_HISTORY_MESSAGES) : newH;
     try{
-      const reply=await askClaude(trimmedForApi,buildSystem(),{maxTokens:1000,webSearch:true});
+      const reply=await askClaude(newH,buildSystem(),{maxTokens:1000,webSearch:true});
       onSaveChat([...newH,{role:'assistant',content:reply,toolLabel}]);
     }catch(e){
       const errorMsg = e.message || 'Connection error — check your network and try again.';
@@ -1040,6 +1081,7 @@ Be specific: use WDFW marine area numbers, name specific spots, flag mark-select
     }
     setLoading(false);
   };
+
 
   const PROMPT_CATS=[
     {cat:'Right Now',prompts:[
@@ -1081,6 +1123,8 @@ Be specific: use WDFW marine area numbers, name specific spots, flag mark-select
 
   return(
     <div style={{display:'flex',flexDirection:'column',gap:14}}>
+
+      {/* Ask your guide — primary entry point for this page */}
       <div style={{...cardOf(T),background:`linear-gradient(135deg,${T.hot}14,${T.accent}0a)`,border:`1px solid ${T.hot}44`}}>
         <div style={{fontSize:13,color:T.sub,marginBottom:10,fontFamily:F}}>Ask your guide anything — spots, regulations, conditions, gear, what to do next.</div>
         <div style={{display:'flex',gap:8}}>
@@ -1089,6 +1133,7 @@ Be specific: use WDFW marine area numbers, name specific spots, flag mark-select
         </div>
       </div>
 
+      {/* Chat */}
       <div ref={chatBoxRef} style={{...cardOf(T),padding:12,minHeight:220,maxHeight:440,overflowY:'auto',display:'flex',flexDirection:'column',gap:10}}>
         {chat.length===0&&!loading&&(
           <div style={{color:T.sub,fontSize:13,textAlign:'center',margin:'auto',fontFamily:F}}>Your expert western Washington fishing guide — ask anything.</div>
@@ -1109,11 +1154,13 @@ Be specific: use WDFW marine area numbers, name specific spots, flag mark-select
       </div>
       {chat.length>0&&<button onClick={()=>onSaveChat([])} style={{background:'none',border:'none',color:T.sub,fontSize:12,cursor:'pointer',textAlign:'left',fontFamily:F}}>Clear chat</button>}
 
+      {/* Trip Planner */}
       <div style={cardOf(T)}>
         <SectionHead T={T}>Trip Planner</SectionHead>
         <TripPlannerTool T={T} favWaters={favWaters} gear={gear} chat={chat} onSend={(p)=>send(p,'Trip Planner')}/>
       </div>
 
+      {/* Quick Prompts */}
       <div style={cardOf(T)}>
         <SectionHead T={T}>Quick Prompts</SectionHead>
         {PROMPT_CATS.map(cat=>(
@@ -1153,10 +1200,11 @@ Search for current conditions and give me ONE concise, scannable trip plan cover
 3. Rigging, lure color, and depth for ${currentSeason()} ${species}
 4. Specific starting spot(s)
 5. Current regulations or closures to know before heading out
-6. A short gear checklist — only items specific to this trip${gear.length?` (cross-check against my gear: ${gear.slice(0,8).map(g=>g.name).join(', ')})`:''}
+6. A short gear checklist — only items specific to this trip, not generic basics${gear.length?` (cross-check against my gear: ${gear.slice(0,8).map(g=>g.name).join(', ')})`:''}
 
-I'm an experienced angler — skip basics, stay tight and scannable.`);
+I'm an experienced angler — skip basics, stay tight and scannable. This is one trip, one plan — don't pad it out.`);
 
+  // Archive: pair up user/assistant messages tagged 'Trip Planner' from chat history
   const archive = (()=>{
     const items=[];
     for(let i=0;i<chat.length-1;i++){
@@ -1164,7 +1212,7 @@ I'm an experienced angler — skip basics, stay tight and scannable.`);
         items.push({prompt:chat[i].content,reply:chat[i+1].content,idx:i});
       }
     }
-    return items.reverse();
+    return items.reverse(); // most recent first
   })();
   const filtered = search.trim()
     ? archive.filter(a=>(a.prompt+a.reply).toLowerCase().includes(search.toLowerCase()))
@@ -1226,14 +1274,20 @@ I'm an experienced angler — skip basics, stay tight and scannable.`);
   );
 }
 
+// ── My Waters Tab ───────────────────────────────────────────────────────────
 function MyWatersTab({favWaters,onSave,onWaterClick,T}){
   const [name,setName]=useState('');
   const [typeOvr,setTO]=useState('');
   const [notes,setNotes]=useState('');
   const [adding,setAdding]=useState(false);
   const [dragIdx,setDragIdx]=useState(null);
+  // If the user typed an explicit freshwater qualifier ("river", "creek",
+  // "lake", etc), that always wins over any marine-area alias overlap — many
+  // WA rivers share a name with the bay they empty into (see AMBIGUOUS_RIVER_MARINE_NAMES).
+  const hasFreshwaterWord = /\b(river|creek|stream|fork|brook|lake|lk|reservoir|pond)\b/i.test(name);
   const inferred = typeOvr || inferWaterType(name);
-  const maMatch = matchMarineArea(name);
+  const maMatch = hasFreshwaterWord ? null : matchMarineArea(name);
+  const ambiguousName = !hasFreshwaterWord && isAmbiguousWaterName(name);
 
   const moveWater=(from,to)=>{
     if(to<0||to>=favWaters.length||from===to) return;
@@ -1254,7 +1308,7 @@ function MyWatersTab({favWaters,onSave,onWaterClick,T}){
 Use status values: "open","closed","limited","unknown". Only include species relevant to ${ma.title} (typically Chinook, Coho, and one or two others). Max 4 species. Month: ${monthName()} ${thisYear()}. Be precise to ${ma.title} specifically — do not confuse it with a neighboring marine area.`
       : `For "${name.trim()}" (${wType}) in Washington State, search WDFW for current status and respond ONLY with valid JSON — no markdown, no explanation:
 {"quickStatus":[{"species":"Chinook","status":"open"},{"species":"Coho","status":"limited"},{"species":"Steelhead","status":"closed"}]}
-Use status values: "open","closed","limited","unknown". Only include relevant species for this water. Max 4 species. Month: ${monthName()} ${thisYear()}.`;
+Use status values: "open","closed","limited","unknown". Only include relevant species for this water. Max 4 species. Month: ${monthName()} ${thisYear()}.${ambiguousName?` NOTE: this river shares its name with a nearby saltwater shoreline/bay area — make sure you're reporting freshwater river regulations, not the marine area's. If this river has different rules in its tidal/mouth section vs. its upper reaches, prioritize whichever section is more commonly fished, and mention the split exists.`:''}`;
     let quickStatus=[];
     try{
       const raw=await askClaude([{role:'user',content:prompt}],'Respond only with valid JSON, no markdown, no preamble.',{maxTokens:300,webSearch:true});
@@ -1292,6 +1346,7 @@ Use: "open","closed","limited","unknown". Max 4 relevant species. Month: ${month
           <Field label="Name" span2 T={T}>
             <input placeholder="e.g. Skykomish River, MA 10, Hood Canal, Lake Sammamish" value={name} onChange={e=>setName(e.target.value)} style={inpOf(T)} onKeyDown={e=>e.key==='Enter'&&add()}/>
             {maMatch&&<div style={{fontSize:11,color:T.accent,marginTop:6,fontFamily:F}}>✓ Matched: {maMatch.title}</div>}
+            {ambiguousName&&<div style={{fontSize:11,color:T.hot,marginTop:6,fontFamily:F,lineHeight:1.5}}>⚠ This name is shared by both a river and a Marine Area shoreline spot. Saved as the river/freshwater body — add "River" to the name if that's not what you meant, or type the Marine Area number instead (e.g. "MA 12") if you meant the saltwater side. Regs often differ between the tidal mouth and the upper river.</div>}
           </Field>
           <Field label="Water Type (auto-detected)" T={T}>
             <div style={{marginBottom:6}}>
@@ -1349,6 +1404,7 @@ Use: "open","closed","limited","unknown". Max 4 relevant species. Month: ${month
   );
 }
 
+// ── Water Detail Page ───────────────────────────────────────────────────────
 function WaterDetailPage({water,onBack,T}){
   const [regs,setRegs]=useState(null);
   const [loading,setLoading]=useState(true);
@@ -1469,19 +1525,20 @@ End with: Verify all rules at wdfw.wa.gov/fishing/rules or call 1-800-902-2474.`
   );
 }
 
-function LogOuting({outings,gear,onSave,T}){
+// ── Log Outing ──────────────────────────────────────────────────────────────
+function LogOuting({outings,gear,onSave,onViewHistory,T}){
   const blank={date:new Date().toISOString().slice(0,10),location:'',waterType:'',speciesTargeted:[],speciesCaught:[],technique:'',gearUsed:'',conditions:'',tide:'',catchCount:0,kept:0,released:0,notes:''};
   const [form,setForm]=useState(blank);
-  const [saved,setSaved]=useState(false);
+  const [saved,setSaved]=useState(null);
   const [error,setError]=useState('');
-  const [mediaPreview,setMediaPreview]=useState(null);
+  const [mediaPreview,setMediaPreview]=useState(null); // data URL shown to user, never persisted
   const [mediaError,setMediaError]=useState('');
   const [analyzing,setAnalyzing]=useState(false);
   const [aiSuggestion,setAiSuggestion]=useState(null);
 
   const handleMediaUpload=async(e)=>{
     const file=e.target.files?.[0];
-    e.target.value='';
+    e.target.value=''; // allow re-selecting the same file later
     if(!file) return;
     setMediaError(''); setAiSuggestion(null);
     const isImage=file.type.startsWith('image/');
@@ -1502,7 +1559,7 @@ function LogOuting({outings,gear,onSave,T}){
         });
         mediaType = file.type;
       }else{
-        dataUrl = await extractVideoFrame(file);
+        dataUrl = await extractVideoFrame(file); // grabs one frame to analyze; video itself isn't stored
         mediaType = 'image/jpeg';
       }
       setMediaPreview(dataUrl);
@@ -1534,6 +1591,7 @@ function LogOuting({outings,gear,onSave,T}){
   const clearMedia=()=>{ setMediaPreview(null); setAiSuggestion(null); setMediaError(''); };
 
   const set=(k,v)=>setForm(prev=>{
+    if(saved) setSaved(null);
     const u={...prev,[k]:v};
     if(k==='location'){const inf=inferWaterType(v);if(inf)u.waterType=inf;}
     return u;
@@ -1546,8 +1604,17 @@ function LogOuting({outings,gear,onSave,T}){
     if(!form.location){setError('Location is required.');return;}
     if(!(form.speciesTargeted||[]).length&&!(form.speciesCaught||[]).length){setError('Select at least one species.');return;}
     setError('');
-    onSave([{...form,id:Date.now()},...outings]);
-    setForm(blank);setSaved(true);setTimeout(()=>setSaved(false),2500);
+    // Never silently lose an AI photo suggestion the user uploaded but didn't
+    // explicitly accept or dismiss — fold it into notes, clearly labeled as
+    // unconfirmed, rather than letting it vanish when the form resets.
+    let finalForm = form;
+    if(aiSuggestion){
+      const unconfirmedNote = `📷 AI photo suggestion (not confirmed): ${aiSuggestion.species}${aiSuggestion.sizeEstimateInches&&aiSuggestion.sizeEstimateInches!=='Not estimable'?`, ~${aiSuggestion.sizeEstimateInches} in`:''} (${aiSuggestion.confidence} confidence).`;
+      finalForm = {...form, notes:[form.notes, unconfirmedNote].filter(Boolean).join(' ')};
+    }
+    const saved = {...finalForm,id:Date.now()};
+    onSave([saved,...outings]);
+    setForm(blank);setSaved(saved);setTimeout(()=>setSaved(null),8000);
     clearMedia();
   };
   const gearNames=gear.map(g=>g.name).filter(Boolean);
@@ -1635,10 +1702,28 @@ function LogOuting({outings,gear,onSave,T}){
       </div>
       {error&&<div style={{fontSize:12,color:T.err,marginTop:8,fontFamily:F}}>{error}</div>}
       <button onClick={submit} style={{...btnOf(T),marginTop:14,width:'100%',background:saved?T.accent:T.hot,fontSize:15}}>{saved?'✓ Outing Saved':'Save Outing'}</button>
+      {saved&&(
+        <div style={{...cardOf(T),marginTop:12,background:T.muted,border:`1px solid ${T.accent}55`}}>
+          <div style={{fontSize:11,color:T.accent,letterSpacing:1,textTransform:'uppercase',fontWeight:'700',marginBottom:8,fontFamily:F}}>✓ Saved — here's exactly what was recorded</div>
+          <div style={{fontSize:13,color:T.text,fontFamily:F}}>{saved.location}</div>
+          <div style={{fontSize:11,color:T.sub,marginTop:2,marginBottom:6,fontFamily:F}}>{saved.date}{saved.waterType?` · ${saved.waterType}`:''}</div>
+          {(saved.speciesTargeted||[]).length>0&&<div style={{fontSize:12,color:T.sub,fontFamily:F}}>Targeting: <span style={{color:T.hot}}>{saved.speciesTargeted.join(', ')}</span></div>}
+          {(saved.speciesCaught||[]).length>0&&<div style={{fontSize:12,color:T.sub,fontFamily:F}}>Caught: <span style={{color:T.accent}}>{saved.speciesCaught.join(', ')}</span></div>}
+          <div style={{fontSize:13,color:T.text,marginTop:4,fontFamily:F}}>
+            {saved.technique?`${saved.technique} · `:''}<strong>{saved.catchCount||0}</strong> fish <span style={{color:T.sub}}>({saved.kept||0} kept · {saved.released||0} released)</span>
+          </div>
+          {saved.notes&&<div style={{fontSize:12,color:T.text,marginTop:6,fontStyle:'italic',lineHeight:1.5,fontFamily:F}}>{saved.notes}</div>}
+          {onViewHistory&&<button onClick={onViewHistory} style={{...btnOf(T,'ghost'),marginTop:10,fontSize:12,width:'100%'}}>View in History →</button>}
+        </div>
+      )}
     </div>
   );
 }
 
+// ── Gear Manager ────────────────────────────────────────────────────────────
+// ── Forage calendar — synthesized from WDFW Forage Fish Program, Puget Sound
+// Institute, NOAA NWFSC, and UVic salmon diet studies. Approximate — forage
+// timing genuinely varies year to year. See SALISH_SEA_FORAGE_GUIDE.md.
 const FORAGE_CALENDAR = [
   {forage:'Herring (ramping up) + small candlefish',detail:'Winter blackmouth keying on small bait. Squid still dispersed through South Sound.',tip:'Small profile — 2-3in spoons, green/blue splatterback.'},
   {forage:'Herring (peak spawn) + squid',detail:'Herring spawn peaks this month. Squid still present, dispersing.',tip:'Try purple/UV for squid alongside herring patterns.'},
@@ -1646,9 +1731,9 @@ const FORAGE_CALENDAR = [
   {forage:'Herring (wrapping up) + sand lance becoming active',detail:'Cherry Point herring stock just starting (Apr-Jun). Sand lance coming out of winter burial.',tip:'Start watching for candlefish patterns as the month progresses.'},
   {forage:'Surf smelt + early squid',detail:'Summer-spawning surf smelt beaches active. First squid sightings up at Neah Bay.',tip:'Herring still solid; smelt-imitating small profiles worth a try nearshore.'},
   {forage:'Sand lance + herring (juvenile rearing)',detail:'Juvenile Chinook nearshore rearing season begins. Sand lance and herring both important.',tip:'Fish close to bottom over sand/gravel for sand lance-feeding fish.'},
-  {forage:'Sand lance + warming-year anchovy',detail:'Peak nearshore rearing. Anchovy presence ramps up in warm years.',tip:'If anchovy are around, switch to a thicker-profile anchovy imitation.'},
+  {forage:'Sand lance + warming-year anchovy',detail:'Peak nearshore rearing. Anchovy presence ramps up in warm years — check what predators are eating locally.',tip:'If anchovy are around, switch to a thicker-profile anchovy imitation.'},
   {forage:'Mixed herring/anchovy/sand lance (regional)',detail:'Migratory coho beginning to show. Forage mix is highly region-dependent by now.',tip:'Match whichever bait you see balling on the surface or sounder.'},
-  {forage:'Surf smelt (fall spawn) + early squid',detail:'Fall-spawning surf smelt beaches activate. Squid starting to show in Elliott Bay/Seattle.',tip:'Coho diet skews more krill/invertebrate than Chinook.'},
+  {forage:'Surf smelt (fall spawn) + early squid',detail:'Fall-spawning surf smelt beaches activate. Squid starting to show in Elliott Bay/Seattle.',tip:'Coho diet skews more krill/invertebrate than Chinook — try smaller, more erratic presentations.'},
   {forage:'Squid (Elliott Bay/Seattle) + fall Chinook forage',detail:'Squid solidly present along the Seattle waterfront.',tip:'Purple/UV worth testing now as squid presence builds.'},
   {forage:'Sand lance (spawning begins) + squid (moving south)',detail:'Sand lance spawning starts again. Squid shifting toward Des Moines/Commencement Bay.',tip:'Small candlefish profiles for winter blackmouth as bait shrinks.'},
   {forage:'Squid (peak central Sound) + sand lance spawning',detail:'Squid peak in central Puget Sound this month. Sand lance spawning continues.',tip:'Purple/UV squid patterns at their most justified time of year.'},
@@ -1665,7 +1750,7 @@ const BOAT_TYPES=['Drift Boat','Center Console','Bay Boat','Jon Boat','Aluminum 
 const PROPULSION_TYPES=['Gas Outboard','Electric Outboard','Electric Trolling Motor Only','Oar / Paddle','Sail','None (Shore/Bank)'];
 
 function GearManager({gear,onSave,configs,onSaveConfigs,boats,onSaveBoats,lineups,onSaveLineups,favWaters,T}){
-  const [section,setSection]=useState('lineups');
+  const [section,setSection]=useState('lineups'); // lineups | catalog | boats
   return(
     <div style={{display:'flex',flexDirection:'column',gap:14}}>
       <div style={{display:'flex',gap:6}}>
@@ -1680,30 +1765,36 @@ function GearManager({gear,onSave,configs,onSaveConfigs,boats,onSaveBoats,lineup
   );
 }
 
+// ── Starter gear import — from user-provided rod/reel tables, validated where
+// possible against manufacturer specs. Corrections found during validation are
+// noted on each item rather than silently changed. importBatch tag prevents
+// duplicate imports if the button is clicked more than once.
 const STARTER_GEAR_IMPORT = [
   {category:'Rod',name:'Okuma Kokanee Black KBC-802L',brand:'Okuma',qty:1,power:'Light',action:'Moderate',length:`8'`,seatType:'Casting',lineRating:'4-8 lb',lureWeight:'1/8-3/4 oz',notes:'Role: feel/sport.'},
   {category:'Rod',name:'Okuma Kokanee Black KBC-9ML',brand:'Okuma',qty:1,power:'Light',action:'Moderate',length:`9'`,seatType:'Casting',lineRating:'4-10 lb',lureWeight:'1/4-1 oz',notes:'Role: feel + control.'},
-  {category:'Rod',name:'Daiwa Metallia SSS MTLA792LRB',brand:'Daiwa',qty:2,power:'Light',action:'Moderate',length:`7'9"`,seatType:'Casting',lineRating:'',lureWeight:'',notes:'Role: plug/jig precision.'},
-  {category:'Rod',name:'Westcoast Fishing Tackle Tyee TS88i9S',brand:'Westcoast Fishing Tackle',qty:1,power:'Medium-Heavy',action:'',length:`9'`,seatType:'Spinning',lineRating:'10-30 lb',lureWeight:'',notes:'Role: knuckle buster / flasher.'},
-  {category:'Rod',name:'Westcoast Fishing Tackle Tyee TS88i9C',brand:'Westcoast Fishing Tackle',qty:1,power:'Medium-Heavy',action:'',length:`9'`,seatType:'Casting',lineRating:'10-30 lb',lureWeight:'',notes:'Role: go-to levelwind.'},
-  {category:'Rod',name:'Shimano Talora TLA-90M-2',brand:'Shimano',qty:2,power:'Medium',action:'Moderate',length:`9'`,seatType:'Casting',lineRating:'12-25 lb',lureWeight:'',notes:'Role: flasher, mooching, jigging.'},
+  {category:'Rod',name:'Daiwa Metallia SSS MTLA792LRB',brand:'Daiwa',qty:2,power:'Light',action:'Moderate',length:`7'9"`,seatType:'Casting',lineRating:'',lureWeight:'',notes:'Confirmed real product (Salmon/Steelhead/Striped Bass series): 2-piece, 7\'9", Light power, manufacturer lists action as "Regular" (mapped to Moderate here). Line/lure weight not confirmed for this exact SKU — left blank rather than guessed. Role: plug/jig precision.'},
+  {category:'Rod',name:'Westcoast Fishing Tackle Tyee TS88i9S',brand:'Westcoast Fishing Tackle',qty:1,power:'Medium-Heavy',action:'',length:`9'`,seatType:'Spinning',lineRating:'10-30 lb',lureWeight:'',notes:'Brand corrected from "West Coast Rods and Reels" to the manufacturer\'s actual name. Tyee Series mooching/trolling rod, IM-10 carbon fiber. Role: knuckle buster / flasher.'},
+  {category:'Rod',name:'Westcoast Fishing Tackle Tyee TS88i9C',brand:'Westcoast Fishing Tackle',qty:1,power:'Medium-Heavy',action:'',length:`9'`,seatType:'Casting',lineRating:'10-30 lb',lureWeight:'',notes:'Brand corrected from "West Coast Rods and Reels". Confirmed exact match: "TS88i9C Casting Seat Trolling Rod - 9.0\'", Toray IM-10 carbon fiber. Role: go-to levelwind.'},
+  {category:'Rod',name:'Shimano Talora TLA-90M-2',brand:'Shimano',qty:2,power:'Medium',action:'Moderate',length:`9'`,seatType:'Casting',lineRating:'12-25 lb',lureWeight:'',notes:'Spelling corrected from "Telora" to the actual product name, Talora — a well-known PNW mooching/trolling rod. Role: flasher, mooching, jigging.'},
   {category:'Rod',name:'KastKing Progressive Glass',brand:'KastKing',qty:1,power:'Heavy',action:'Moderate',length:`8'`,seatType:'Spinning',lineRating:'10-25 lb',lureWeight:'1/2-3 oz',notes:'Role: bendy knuckle buster (glass blank).'},
-  {category:'Rod',name:'Penn Fathom-Master Graphite',brand:'Penn',qty:2,power:'',action:'Moderate',length:`8.5'`,seatType:'Casting',lineRating:'10-25 lb',lureWeight:'',notes:'Role: old reliable, confidence rod.'},
-  {category:'Rod',name:'Okuma Celilo CE-C-802Ha',brand:'Okuma',qty:1,power:'Heavy',action:'',length:`8'`,seatType:'Casting',lineRating:'12-25 lb',lureWeight:'1/2-4 oz',notes:'Role: feel/sport.'},
-  {category:'Rod',name:'Okuma Guide Select Pro GSP-S-902H',brand:'Okuma',qty:1,power:'Heavy',action:'Fast',length:`9'`,seatType:'Spinning',lineRating:'15-40 lb',lureWeight:'1/2-3 oz',notes:'Role: versatile with good feel.'},
-  {category:'Rod',name:'Okuma Guide Select Classic',brand:'Okuma',qty:1,power:'Heavy',action:'Moderate',length:`9.25'`,seatType:'Casting',lineRating:'15-30 lb',lureWeight:'2-8 oz',notes:'Role: versatile with good feel.'},
-  {category:'Reel',name:'Okuma Cold Water Stainless Low Profile',brand:'Okuma',qty:1,reelType:'Levelwind / Conventional',reelSize:'300',lineType:'Monofilament',linePound:'25 lb',notes:'Stainless version.'},
-  {category:'Reel',name:'Okuma Cold Water Low Profile',brand:'Okuma',qty:1,reelType:'Levelwind / Conventional',reelSize:'300',lineType:'Braid',linePound:'55 lb (50 lb mono topshot)',notes:''},
-  {category:'Reel',name:'Okuma Convector Low Profile',brand:'Okuma',qty:2,reelType:'Levelwind / Conventional',reelSize:'300',lineType:'',linePound:'',notes:'Suits lighter trolling weights.'},
-  {category:'Reel',name:'Okuma Convector Low Profile',brand:'Okuma',qty:2,reelType:'Levelwind / Conventional',reelSize:'150',lineType:'',linePound:'',notes:'Smaller size of the Convector Low-Profile.'},
-  {category:'Reel',name:'Shimano Tekota 501HG LC',brand:'Shimano',qty:1,reelType:'Levelwind / Conventional',reelSize:'500',lineType:'Braid',linePound:'55 lb',notes:'Left-hand-retrieve variant of the Tekota 500HG-LC.'},
-  {category:'Reel',name:'Islander TR3',brand:'Islander',qty:1,reelType:'Spinning',reelSize:'',lineType:'Monofilament',linePound:'25 lb',notes:'Knucklebuster-style mooching reel.'},
+  {category:'Rod',name:'Penn Fathom-Master Graphite',brand:'Penn',qty:2,power:'',action:'Moderate',length:`8.5'`,seatType:'Casting',lineRating:'10-25 lb',lureWeight:'',notes:'Confirmed real product — well-known Great Lakes/PNW salmon-steelhead graphite rod, 8.5\'. Power rating not given in source data and not independently confirmed — left blank. Role: old reliable, confidence rod, still very bendy.'},
+  {category:'Rod',name:'Okuma Celilo CE-C-802Ha',brand:'Okuma',qty:1,power:'Heavy',action:'',length:`8'`,seatType:'Casting',lineRating:'12-25 lb',lureWeight:'1/2-4 oz',notes:'Correction: source data listed "Heavy" under Action, but Okuma\'s own model code (802Ha = 8\'0", Heavy power, "a" series) confirms this is the Power rating, not Action — moved accordingly. Actual taper/action not confirmed, left blank. Role: feel/sport.'},
+  {category:'Rod',name:'Okuma Guide Select Pro GSP-S-902H',brand:'Okuma',qty:1,power:'Heavy',action:'Fast',length:`9'`,seatType:'Spinning',lineRating:'15-40 lb',lureWeight:'1/2-3 oz',notes:'Validated against Okuma\'s official spec sheet for the casting sibling GSP-C-902H — line rating and lure weight matched exactly, confirming accuracy. Manufacturer taper is technically "Medium-Fast (MF)", mapped to Fast here. Role: versatile with good feel.'},
+  {category:'Rod',name:'Okuma Guide Select Classic',brand:'Okuma',qty:1,power:'Heavy',action:'Moderate',length:`9.25'`,seatType:'Casting',lineRating:'15-30 lb',lureWeight:'2-8 oz',notes:'Guide Select Pro line confirmed real and widely used for PNW salmon/steelhead; the "Classic" sub-line\'s exact spec sheet wasn\'t independently found this session — figures taken as provided. Role: versatile with good feel.'},
+
+  {category:'Reel',name:'Okuma Cold Water Stainless Low Profile',brand:'Okuma',qty:1,reelType:'Levelwind / Conventional',reelSize:'300',lineType:'Monofilament',linePound:'25 lb',notes:'Confirmed real product — Cold Water Low-Profile Line Counter, one of the most popular PNW salmon trolling reels. Stainless version.'},
+  {category:'Reel',name:'Okuma Cold Water Low Profile',brand:'Okuma',qty:1,reelType:'Levelwind / Conventional',reelSize:'300',lineType:'Braid',linePound:'55 lb (50 lb mono topshot)',notes:'Confirmed real product. Currently spooled per source data: 55lb braid with 50lb mono topshot.'},
+  {category:'Reel',name:'Okuma Convector Low Profile',brand:'Okuma',qty:2,reelType:'Levelwind / Conventional',reelSize:'300',lineType:'',linePound:'',notes:'Confirmed real product — Convector Low-Profile Line Counter, ~11.7oz, 5.4:1 gear ratio, ~22lb max drag. Worth knowing: several PNW anglers and Okuma\'s own warranty team note these suit lighter trolling weights better than full downrigger/diver duty — the heavier Cold Water line is generally preferred for that.'},
+  {category:'Reel',name:'Okuma Convector Low Profile',brand:'Okuma',qty:2,reelType:'Levelwind / Conventional',reelSize:'150',lineType:'',linePound:'',notes:'Smaller (150) size of the Convector Low-Profile — same notes as the 300 size above re: trolling weight limits.'},
+  {category:'Reel',name:'Shimano Tekota 501HG LC',brand:'Shimano',qty:1,reelType:'Levelwind / Conventional',reelSize:'500',lineType:'Braid',linePound:'55 lb (~25-30 lb mono topshot, unconfirmed exact)',notes:'Confirmed: "501" denotes the left-hand-retrieve variant of the Tekota 500HG-LC. Confirmed specs: 6.3:1 gear ratio, ~225yds of 65lb braid capacity. Widely regarded as one of the best line-counter trolling reels in the PNW.'},
+  {category:'Reel',name:'Islander TR3',brand:'Islander',qty:1,reelType:'Spinning',reelSize:'',lineType:'Monofilament',linePound:'25 lb',notes:'Knucklebuster-style mooching reel (manual, no anti-reverse, for finesse mooching).'},
   {category:'Reel',name:'Shimano Moocher Plus 4000GT',brand:'Shimano',qty:1,reelType:'Spinning',reelSize:'4000',lineType:'Monofilament',linePound:'25 lb',notes:'Knucklebuster-style mooching reel.'},
-  {category:'Reel',name:'Daiwa M-One Plus',brand:'Daiwa',qty:1,reelType:'Spinning',reelSize:'',lineType:'Monofilament',linePound:'25 lb',notes:'Knucklebuster-style mooching reel.'},
+  {category:'Reel',name:'Daiwa M-One Plus',brand:'Daiwa',qty:1,reelType:'Spinning',reelSize:'',lineType:'Monofilament',linePound:'25 lb',notes:'Knucklebuster-style mooching reel — frequently referenced by PNW anglers as a go-to mooching pairing.'},
   {category:'Reel',name:'KastKing Rekon 10LM',brand:'KastKing',qty:1,reelType:'Levelwind / Conventional',reelSize:'',lineType:'Monofilament',linePound:'25 lb',notes:'Conventional levelwind with line counter.'},
-  {category:'Reel',name:'Okuma Convector CV 20D',brand:'Okuma',qty:1,reelType:'Levelwind / Conventional',reelSize:'20',lineType:'Monofilament',linePound:'25 lb',notes:'Round-body Convector.'},
+  {category:'Reel',name:'Okuma Convector CV 20D',brand:'Okuma',qty:1,reelType:'Levelwind / Conventional',reelSize:'20',lineType:'Monofilament',linePound:'25 lb',notes:'Round-body Convector (distinct from the low-profile Convector rows above) — conventional levelwind with line counter.'},
 ].map((item,i)=>({...item,id:`starter-${i}`,importBatch:'starter-v1'}));
 
+// ── Catalog: categorized gear + compact rod/reel config table ──────────────
 function GearCatalog({gear,onSave,configs,onSaveConfigs,T}){
   const blank={category:'Rod',name:'',brand:'',qty:1,power:'',action:'',length:'',seatType:'',lineRating:'',lureWeight:'',reelType:'',reelSize:'',lineType:'',linePound:'',lineDate:'',lureType:'',color:'',ttType:'',size:'',deviceType:'',notes:''};
   const [form,setForm]=useState(blank);
@@ -1741,7 +1832,8 @@ function GearCatalog({gear,onSave,configs,onSaveConfigs,T}){
       {!alreadyImported&&(
         <div style={{...cardOf(T),background:`linear-gradient(135deg,${T.accent}14,${T.hot}0a)`,border:`1px solid ${T.accent}44`}}>
           <SectionHead T={T}>Import Starter Gear</SectionHead>
-          <div style={{fontSize:13,color:T.text,marginBottom:6,fontFamily:F}}>11 rods and 10 reels, ready to import.</div>
+          <div style={{fontSize:13,color:T.text,marginBottom:6,fontFamily:F}}>11 rods and 10 reels from your uploaded data, ready to import.</div>
+          <div style={{fontSize:11,color:T.sub,marginBottom:10,fontFamily:F,lineHeight:1.6}}>Validated against manufacturer specs where possible — 2 corrections found and noted (a brand name and a power/action mix-up), a few gaps left blank rather than guessed. Check each item's notes after importing. Rod+reel pairings weren't specified in the source data, so nothing gets auto-paired — use the Configurations table below once everything's in.</div>
           <button onClick={()=>onSave([...STARTER_GEAR_IMPORT,...gear])} style={btnOf(T,'green')}>Import 11 Rods + 10 Reels</button>
         </div>
       )}
@@ -1878,8 +1970,8 @@ function GearCatalog({gear,onSave,configs,onSaveConfigs,T}){
 
       {rods.length>0&&reels.length>0&&(
         <div style={cardOf(T)}>
-          <SectionHead T={T}>Rod + Reel Configurations</SectionHead>
-          <div style={{fontSize:12,color:T.sub,marginBottom:10,fontFamily:F}}>Pair a rod with a reel so you can assign the combo to a starting lineup.</div>
+          <SectionHead T={T}>Rod + Reel Configurations (optional)</SectionHead>
+          <div style={{fontSize:12,color:T.sub,marginBottom:10,fontFamily:F}}>Individual rods and reels already work in lineups on their own — this is purely optional if you want to pre-pair a specific rod+reel combo as a single named unit.</div>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr auto',gap:8,marginBottom:10}}>
             <select value={cfgRod} onChange={e=>setCfgRod(e.target.value)} style={{...inpOf(T),fontSize:13}}>
               <option value="">Rod…</option>{rods.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
@@ -1910,6 +2002,7 @@ function GearCatalog({gear,onSave,configs,onSaveConfigs,T}){
   );
 }
 
+// ── Boats — same compact-table style as Configs, so the relationship reads clearly ──
 function BoatCatalog({boats,onSaveBoats,T}){
   const blank={name:'',type:'',propulsion:'',rampRequired:true,electricOnly:false,notes:''};
   const [form,setForm]=useState(blank);
@@ -1973,17 +2066,22 @@ function BoatCatalog({boats,onSaveBoats,T}){
   );
 }
 
+// ── Lineups — Sleeper-style: rod/reel starters on top, tackle starters below,
+// button-press swap from bench (no drag/drop) ───────────────────────────────
 function LineupBoard({gear,configs,boats,lineups,onSaveLineups,favWaters,T}){
   const [editingId,setEditingId]=useState(null);
   const [showNew,setShowNew]=useState(false);
   const [newName,setNewName]=useState('');
-  const consumables = gear.filter(g=>g.category!=='Rod'&&g.category!=='Reel');
+  // ALL gear is individually assignable to lineups — including rods and reels.
+  // Configs (pre-paired rod+reel combos) are an optional secondary layer shown
+  // only if the user has actually created some. Individual gear is the default.
+  const allGear = gear;
   const SUGGESTED=['Saltwater Salmon — Trolling','Saltwater Salmon — Mooching','River Steelhead','Trout — Lowland Lakes','Sea-Run Cutthroat','Bass'];
 
   const createLineup=()=>{
     const name=newName.trim();
     if(!name)return;
-    onSaveLineups([{id:Date.now(),name,configIds:[],lureIds:[],boatId:''},...lineups]);
+    onSaveLineups([{id:Date.now(),name,configIds:[],gearIds:[],lureIds:[],boatId:''},...lineups]);
     setNewName('');setShowNew(false);
   };
   const delLineup=id=>onSaveLineups(lineups.filter(l=>l.id!==id));
@@ -2009,11 +2107,11 @@ function LineupBoard({gear,configs,boats,lineups,onSaveLineups,favWaters,T}){
       )}
       {lineups.length===0&&!showNew&&(
         <div style={{...cardOf(T),textAlign:'center',color:T.sub,fontSize:13,fontFamily:F}}>
-          No lineups yet. Create one for a species, technique, or favorite water — then assign rod/reel starters from your gear bag.
+          No lineups yet. Create one for a species, technique, or favorite water — then pick rods, reels, and tackle from your gear bag.
         </div>
       )}
       {lineups.map(lineup=>(
-        <LineupCard key={lineup.id} lineup={lineup} configs={configs} consumables={consumables} boats={boats}
+        <LineupCard key={lineup.id} lineup={lineup} allGear={allGear} configs={configs} boats={boats}
           editing={editingId===lineup.id} onToggleEdit={()=>setEditingId(editingId===lineup.id?null:lineup.id)}
           onUpdate={patch=>updateLineup(lineup.id,patch)} onDelete={()=>delLineup(lineup.id)} T={T}/>
       ))}
@@ -2021,21 +2119,59 @@ function LineupBoard({gear,configs,boats,lineups,onSaveLineups,favWaters,T}){
   );
 }
 
-function LineupCard({lineup,configs,consumables,boats,editing,onToggleEdit,onUpdate,onDelete,T}){
-  const starterConfigs = configs.filter(c=>(lineup.configIds||[]).includes(c.id));
-  const benchConfigs = configs.filter(c=>!(lineup.configIds||[]).includes(c.id));
-  const starterLures = consumables.filter(g=>(lineup.lureIds||[]).includes(g.id));
+function LineupCard({lineup,allGear,configs,boats,editing,onToggleEdit,onUpdate,onDelete,T}){
+  // Merge gearIds (new field) and lureIds (legacy field) for backward compat.
+  // New gear gets written to gearIds; old data in lureIds still reads correctly.
+  const activeGearIds = new Set([...(lineup.gearIds||[]),...(lineup.lureIds||[])]);
+  const starterGear = allGear.filter(g=>activeGearIds.has(g.id));
+  const benchGear   = allGear.filter(g=>!activeGearIds.has(g.id));
+
+  // Sort starters: Rods first, Reels second, everything else after
+  const sortedStarters = [
+    ...starterGear.filter(g=>g.category==='Rod'),
+    ...starterGear.filter(g=>g.category==='Reel'),
+    ...starterGear.filter(g=>g.category!=='Rod'&&g.category!=='Reel'),
+  ];
+
+  // Bench: same order — Rods, Reels, then rest grouped by category
+  const benchRods   = benchGear.filter(g=>g.category==='Rod');
+  const benchReels  = benchGear.filter(g=>g.category==='Reel');
   const benchByType = {};
-  consumables.filter(g=>!(lineup.lureIds||[]).includes(g.id)).forEach(g=>{
+  benchGear.filter(g=>g.category!=='Rod'&&g.category!=='Reel').forEach(g=>{
     if(!benchByType[g.category]) benchByType[g.category]=[];
     benchByType[g.category].push(g);
   });
+
+  // Configs are optional — only shown when configs actually exist in the catalog
+  const hasConfigs = configs.length>0;
+  const starterConfigs = hasConfigs ? configs.filter(c=>(lineup.configIds||[]).includes(c.id)) : [];
+  const benchConfigs   = hasConfigs ? configs.filter(c=>!(lineup.configIds||[]).includes(c.id)) : [];
+
+  const startGear  = id=>onUpdate({gearIds:[...(lineup.gearIds||[]),...(lineup.lureIds||[]),id].filter((v,i,a)=>a.indexOf(v)===i)});
+  const benchGearItem= id=>onUpdate({
+    gearIds:(lineup.gearIds||[]).filter(x=>x!==id),
+    lureIds:(lineup.lureIds||[]).filter(x=>x!==id),
+  });
+  const startConfig= id=>onUpdate({configIds:[...(lineup.configIds||[]),id]});
+  const benchConfig= id=>onUpdate({configIds:(lineup.configIds||[]).filter(x=>x!==id)});
+
   const boat = boats.find(b=>String(b.id)===String(lineup.boatId));
 
-  const startConfig=id=>onUpdate({configIds:[...(lineup.configIds||[]),id]});
-  const benchConfig=id=>onUpdate({configIds:(lineup.configIds||[]).filter(x=>x!==id)});
-  const startLure=id=>onUpdate({lureIds:[...(lineup.lureIds||[]),id]});
-  const benchLure=id=>onUpdate({lureIds:(lineup.lureIds||[]).filter(x=>x!==id)});
+  const GearChip=({g,benching})=>(
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'7px 10px',background:benching?T.muted:T.bg,border:`1px solid ${T.border}`,borderRadius:8,marginBottom:5}}>
+      <div>
+        <span style={{fontSize:13,color:T.text,fontFamily:F,fontWeight:benching?'600':'400'}}>{g.name}</span>
+        <span style={{fontSize:11,color:T.sub,fontFamily:F,marginLeft:6}}>· {g.category}</span>
+        {g.category==='Rod'&&g.length&&<span style={{fontSize:10,color:T.dim,fontFamily:F,marginLeft:4}}>{g.length}</span>}
+        {g.category==='Reel'&&g.lineType&&<span style={{fontSize:10,color:T.dim,fontFamily:F,marginLeft:4}}>{g.linePound} {g.lineType}</span>}
+      </div>
+      {editing&&(
+        benching
+          ? <button onClick={()=>benchGearItem(g.id)} style={{...btnOf(T,'ghost'),padding:'2px 8px',fontSize:10}}>Bench</button>
+          : <button onClick={()=>startGear(g.id)} style={{...btnOf(T,'green'),padding:'2px 8px',fontSize:10}}>Start</button>
+      )}
+    </div>
+  );
 
   return(
     <div style={{...cardOf(T),borderLeft:`3px solid ${T.hot}`}}>
@@ -2060,59 +2196,70 @@ function LineupCard({lineup,configs,consumables,boats,editing,onToggleEdit,onUpd
         </div>
       )}
 
-      <div style={{fontSize:10,color:T.hot,letterSpacing:1.2,textTransform:'uppercase',fontWeight:'700',marginBottom:6,fontFamily:F}}>Starting Rod &amp; Reel</div>
-      {starterConfigs.length===0&&<div style={{fontSize:12,color:T.sub,fontFamily:F,fontStyle:'italic',marginBottom:8}}>No rod/reel assigned.</div>}
-      {starterConfigs.map(c=>(
-        <div key={c.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 10px',background:T.muted,borderRadius:8,marginBottom:6}}>
-          <span style={{fontSize:13,color:T.text,fontFamily:F,fontWeight:'600'}}>{c.name}</span>
-          {editing&&<button onClick={()=>benchConfig(c.id)} style={{...btnOf(T,'ghost'),padding:'3px 9px',fontSize:11}}>Bench</button>}
-        </div>
-      ))}
+      {/* Starters — individual gear first (rods → reels → tackle) */}
+      <div style={{fontSize:10,color:T.hot,letterSpacing:1.2,textTransform:'uppercase',fontWeight:'700',marginBottom:6,fontFamily:F}}>Starting Gear</div>
+      {sortedStarters.length===0&&<div style={{fontSize:12,color:T.sub,fontFamily:F,fontStyle:'italic',marginBottom:8}}>No gear in the starting lineup yet{editing?' — use the bench below to add some':' — tap Edit to set up your lineup'}.</div>}
+      {sortedStarters.map(g=><GearChip key={g.id} g={g} benching={true}/>)}
 
-      {starterLures.length>0&&(
+      {/* Configs — only shown if user has created at least one */}
+      {hasConfigs&&starterConfigs.length>0&&(
         <>
-          <div style={{fontSize:10,color:T.accent,letterSpacing:1.2,textTransform:'uppercase',fontWeight:'700',marginTop:10,marginBottom:6,fontFamily:F}}>Starting Tackle</div>
-          {starterLures.map(g=>(
-            <div key={g.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 10px',background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,marginBottom:5}}>
-              <span style={{fontSize:12,color:T.text,fontFamily:F}}>{g.name} <span style={{color:T.sub}}>· {g.category}</span></span>
-              {editing&&<button onClick={()=>benchLure(g.id)} style={{...btnOf(T,'ghost'),padding:'2px 8px',fontSize:10}}>Bench</button>}
+          <div style={{fontSize:10,color:T.sub,letterSpacing:1.2,textTransform:'uppercase',fontWeight:'600',marginTop:10,marginBottom:6,fontFamily:F}}>Paired Configs (optional)</div>
+          {starterConfigs.map(c=>(
+            <div key={c.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'7px 10px',background:T.muted,border:`1px solid ${T.border}`,borderRadius:8,marginBottom:5}}>
+              <span style={{fontSize:12,color:T.text,fontFamily:F}}>{c.name}</span>
+              {editing&&<button onClick={()=>benchConfig(c.id)} style={{...btnOf(T,'ghost'),padding:'2px 8px',fontSize:10}}>Bench</button>}
             </div>
           ))}
         </>
       )}
 
+      {/* Bench (edit mode) — individual gear first, configs last and only if they exist */}
       {editing&&(
         <div style={{marginTop:14,paddingTop:12,borderTop:`1px solid ${T.border}`}}>
           <div style={{fontSize:10,color:T.sub,letterSpacing:1.2,textTransform:'uppercase',fontWeight:'700',marginBottom:8,fontFamily:F}}>Bench</div>
-          {benchConfigs.length>0&&(
+
+          {benchRods.length>0&&(
             <div style={{marginBottom:10}}>
-              <div style={{fontSize:11,color:T.sub,fontFamily:F,marginBottom:5}}>Rod + Reel</div>
-              {benchConfigs.map(c=>(
-                <div key={c.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 8px',marginBottom:4}}>
-                  <span style={{fontSize:12,color:T.text,fontFamily:F}}>{c.name}</span>
-                  <button onClick={()=>startConfig(c.id)} style={{...btnOf(T,'green'),padding:'3px 10px',fontSize:11}}>Start</button>
-                </div>
-              ))}
+              <div style={{fontSize:11,color:T.sub,fontFamily:F,marginBottom:4}}>Rods</div>
+              {benchRods.map(g=><GearChip key={g.id} g={g} benching={false}/>)}
+            </div>
+          )}
+          {benchReels.length>0&&(
+            <div style={{marginBottom:10}}>
+              <div style={{fontSize:11,color:T.sub,fontFamily:F,marginBottom:4}}>Reels</div>
+              {benchReels.map(g=><GearChip key={g.id} g={g} benching={false}/>)}
             </div>
           )}
           {Object.entries(benchByType).map(([cat,items])=>(
             <div key={cat} style={{marginBottom:10}}>
-              <div style={{fontSize:11,color:T.sub,fontFamily:F,marginBottom:5}}>{cat}</div>
-              {items.map(g=>(
-                <div key={g.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 8px',marginBottom:4}}>
-                  <span style={{fontSize:12,color:T.text,fontFamily:F}}>{g.name}</span>
-                  <button onClick={()=>startLure(g.id)} style={{...btnOf(T,'green'),padding:'3px 10px',fontSize:11}}>Start</button>
+              <div style={{fontSize:11,color:T.sub,fontFamily:F,marginBottom:4}}>{cat}</div>
+              {items.map(g=><GearChip key={g.id} g={g} benching={false}/>)}
+            </div>
+          ))}
+
+          {hasConfigs&&benchConfigs.length>0&&(
+            <div style={{marginBottom:10}}>
+              <div style={{fontSize:11,color:T.dim,fontFamily:F,marginBottom:4,fontStyle:'italic'}}>Optional: Paired Configs</div>
+              {benchConfigs.map(c=>(
+                <div key={c.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 8px',marginBottom:4}}>
+                  <span style={{fontSize:12,color:T.text,fontFamily:F}}>{c.name}</span>
+                  <button onClick={()=>startConfig(c.id)} style={{...btnOf(T,'ghost'),padding:'3px 10px',fontSize:11}}>Add to Lineup</button>
                 </div>
               ))}
             </div>
-          ))}
-          {benchConfigs.length===0&&Object.keys(benchByType).length===0&&<div style={{fontSize:12,color:T.sub,fontFamily:F,fontStyle:'italic'}}>Nothing on the bench — add more gear in the Catalog tab.</div>}
+          )}
+
+          {benchRods.length===0&&benchReels.length===0&&Object.keys(benchByType).length===0&&benchConfigs.length===0&&(
+            <div style={{fontSize:12,color:T.sub,fontFamily:F,fontStyle:'italic'}}>All gear is in the lineup — add more in the Catalog tab.</div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
+// ── Regs & Alerts ───────────────────────────────────────────────────────────
 function RegsAlerts({T}){
   const [alerts,setAlerts]=useState(null);
   const [loading,setLoading]=useState(false);
@@ -2175,6 +2322,7 @@ Be specific to western WA. Note that regulations change frequently — always ve
   );
 }
 
+// ── History ─────────────────────────────────────────────────────────────────
 function History({outings,onSave,T}){
   const [filterSp,setFS]=useState('');
   const [filterW,setFW]=useState('');
@@ -2225,34 +2373,35 @@ function History({outings,onSave,T}){
   );
 }
 
-// ── Sign-in / Sign-up screen ─────────────────────────────────────────────────
-function SignInScreen({onSignIn,onSignUp,onSkip,error,busy}){
-  const [mode,setMode]=useState('signin'); // signin | signup
+// ── Sign-in screen (shown when Firebase is configured and not yet signed in) ──
+function SignInScreen({onSignIn,error,busy}){
   const [email,setEmail]=useState('');
   const [password,setPassword]=useState('');
   const T=DARK;
-  const submit=()=> mode==='signin' ? onSignIn(email,password) : onSignUp(email,password);
   return(
     <div style={{background:T.bg,minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:F,padding:20}}>
       <div style={{...cardOf(T),width:'100%',maxWidth:360}}>
         <div style={{textAlign:'center',marginBottom:18}}>
-          <div style={{width:44,height:44,borderRadius:12,background:`linear-gradient(135deg,${T.accent},${T.hot})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,margin:'0 auto 10px'}}>≋</div>
-          <div style={{fontSize:18,fontWeight:'700',color:T.text}}>Cascadia Fishing</div>
-          <div style={{fontSize:12,color:T.sub,marginTop:4}}>Sign in to sync across all your devices</div>
-        </div>
-        <div style={{display:'flex',gap:6,marginBottom:14}}>
-          <button onClick={()=>setMode('signin')} style={{flex:1,padding:'8px',borderRadius:8,border:`1px solid ${mode==='signin'?T.hot:T.border}`,background:mode==='signin'?T.hot:'transparent',color:mode==='signin'?'#fff':T.sub,cursor:'pointer',fontSize:13,fontFamily:F}}>Sign In</button>
-          <button onClick={()=>setMode('signup')} style={{flex:1,padding:'8px',borderRadius:8,border:`1px solid ${mode==='signup'?T.hot:T.border}`,background:mode==='signup'?T.hot:'transparent',color:mode==='signup'?'#fff':T.sub,cursor:'pointer',fontSize:13,fontFamily:F}}>Create Account</button>
+          <div style={{display:'flex',justifyContent:'center',marginBottom:10}}><BrandMark T={T} size={44}/></div>
+          <div style={{fontSize:18,fontWeight:'700',color:T.text}}>Blackmouth<span style={{color:T.hot}}>.AI</span></div>
+          <div style={{fontSize:12,color:T.sub,marginTop:4}}>Sign in to sync your data</div>
         </div>
         <div style={{display:'flex',flexDirection:'column',gap:10}}>
-          <input type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} style={inpOf(T)} onKeyDown={e=>e.key==='Enter'&&submit()}/>
-          <input type="password" placeholder={mode==='signup'?'Password (6+ characters)':'Password'} value={password} onChange={e=>setPassword(e.target.value)} style={inpOf(T)} onKeyDown={e=>e.key==='Enter'&&submit()}/>
+          <input type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} style={inpOf(T)} onKeyDown={e=>e.key==='Enter'&&onSignIn(email,password)}/>
+          <input type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} style={inpOf(T)} onKeyDown={e=>e.key==='Enter'&&onSignIn(email,password)}/>
           {error&&<div style={{fontSize:12,color:T.err}}>{error}</div>}
-          <button onClick={submit} disabled={busy||!email||!password} style={{...btnOf(T,'green'),opacity:busy?0.7:1}}>
-            {busy?(mode==='signin'?'Signing in…':'Creating account…'):(mode==='signin'?'Sign In':'Create Account')}
+          <button onClick={()=>onSignIn(email,password)} disabled={busy||!email||!password} style={{...btnOf(T,'green'),opacity:busy?0.7:1}}>
+            {busy?'Signing in…':'Sign In'}
           </button>
-          <button onClick={onSkip} style={{...btnOf(T,'ghost'),fontSize:12}}>Skip — use this device only</button>
         </div>
+        <div style={{fontSize:11,color:T.sub,marginTop:16,textAlign:'center',lineHeight:1.6}}>
+          Ask whoever set this up to create your account — there's no public sign-up here on purpose.
+        </div>
+        {!isAnthropicConfigured()&&(
+          <div style={{fontSize:11,color:T.err,marginTop:12,textAlign:'center',lineHeight:1.6,padding:10,background:`${T.err}14`,borderRadius:8}}>
+            ⚠ No Anthropic API key detected for this deployment. AI Guide, Trip Planner, and photo analysis won't work until <code>VITE_ANTHROPIC_API_KEY</code> is set at build time.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2263,17 +2412,18 @@ export default function Root(){
   const [authState,setAuthState] = useState(isFirebaseConfigured() ? 'loading' : 'local');
   const [authError,setAuthError] = useState('');
   const [authBusy,setAuthBusy] = useState(false);
-  const [userEmail,setUserEmail] = useState('');
 
   useEffect(()=>{
     if(!isFirebaseConfigured()){ setSyncUser(null); return; }
     (async()=>{
+      // Try silent re-auth using a refresh token cached via Claude's own
+      // storage, so signing in once per Claude account is enough.
       try{
-        const cached = getCachedRefreshToken();
+        const cached = await getCachedRefreshToken();
         if(cached){
           await fbRefresh(cached);
           setSyncUser(fbTokens.uid);
-          cacheRefreshToken(fbTokens.refreshToken);
+          await cacheRefreshToken(fbTokens.refreshToken);
           setAuthState('signedIn');
           return;
         }
@@ -2287,8 +2437,7 @@ export default function Root(){
     try{
       const uid = await fbSignIn(email,password);
       setSyncUser(uid);
-      cacheRefreshToken(fbTokens.refreshToken);
-      setUserEmail(email);
+      await cacheRefreshToken(fbTokens.refreshToken);
       setAuthState('signedIn');
     }catch(e){
       setAuthError(e.message || 'Sign-in failed — check your email and password.');
@@ -2296,29 +2445,9 @@ export default function Root(){
     setAuthBusy(false);
   };
 
-  const handleSignUp = async (email,password)=>{
-    setAuthBusy(true); setAuthError('');
-    try{
-      const uid = await fbSignUp(email,password);
-      setSyncUser(uid);
-      cacheRefreshToken(fbTokens.refreshToken);
-      setUserEmail(email);
-      setAuthState('signedIn');
-    }catch(e){
-      setAuthError(e.message || 'Sign-up failed.');
-    }
-    setAuthBusy(false);
-  };
-
-  const handleSkip = ()=>{
-    setSyncUser(null);
-    setAuthState('local');
-  };
-
   const handleSignOut = ()=>{
     fbSignOut(); setSyncUser(null);
     cacheRefreshToken(null);
-    setUserEmail('');
     setAuthState('signedOut');
   };
 
@@ -2326,7 +2455,86 @@ export default function Root(){
     return <div style={{background:DARK.bg,height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',color:DARK.sub,fontFamily:F,fontSize:15}}>Loading…</div>;
   }
   if(authState==='signedOut'){
-    return <SignInScreen onSignIn={handleSignIn} onSignUp={handleSignUp} onSkip={handleSkip} error={authError} busy={authBusy}/>;
+    return <SignInScreen onSignIn={handleSignIn} error={authError} busy={authBusy}/>;
   }
-  return <CascadiaApp syncStatus={authState==='signedIn'?'synced':'local'} userEmail={userEmail} onSignOut={authState==='signedIn'?handleSignOut:null}/>;
+  return <BlackmouthApp syncStatus={authState==='signedIn'?'synced':'local'} onSignOut={authState==='signedIn'?handleSignOut:null}/>;
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+SETUP NOTES — cross-device / friend sync via Firebase (optional)
+
+1. console.firebase.google.com → Add project → name it anything.
+2. Build > Authentication > Get started > enable Email/Password sign-in.
+3. Authentication > Users > Add user — one per person you want to share with.
+   There's no public sign-up screen in the app, so only people you add here
+   can ever sign in (and use your Anthropic usage via this artifact's AI
+   features, which actually bills to whichever Claude account is viewing the
+   artifact, not to you, when published).
+4. Build > Firestore Database > Create database (production mode).
+5. Firestore > Rules tab, paste this, then Publish:
+
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /users/{userId}/data/{document=**} {
+         allow read, write: if request.auth != null && request.auth.uid == userId;
+       }
+     }
+   }
+
+6. Project settings (gear icon) > General > scroll to "Your apps" > Web app
+   (</> icon) > register an app (no Hosting needed) > copy the config shown.
+7. Paste the apiKey and projectId into the firebaseConfig object near the top
+   of this file, then republish the artifact.
+
+Each person you add in step 3 gets their own completely private data —
+the security rule above guarantees one person's outings/gear/waters can
+never be read or written by anyone else's account.
+────────────────────────────────────────────────────────────────────────────
+
+SETUP NOTES — Anthropic API key (required for standalone deployment)
+
+Inside a published Claude.ai artifact, no key is needed — calls are proxied
+automatically. Deployed standalone (your own Vite project, your own domain),
+the browser needs a real key, injected at build time as a global constant
+(NOT via import.meta.env — this file must stay parseable as a plain script
+for the Claude.ai artifact runtime, and import.meta is a syntax error there.
+Note: even mentioning certain build-tool import syntax in this comment block
+can trip the artifact's dependency scanner, so the example below is written
+as plain description rather than copy-pasteable module syntax on purpose):
+
+1. Get a key at console.anthropic.com.
+2. In your own Vite project (NOT this file), create .env.local (never commit
+   this file) with:
+     VITE_ANTHROPIC_API_KEY=sk-ant-your-real-key-here
+3. In your Vite project's config file, add a `define` block that maps that
+   env var onto the global identifier this file actually reads at runtime,
+   __ANTHROPIC_API_KEY__. Structure needed (search "vite define env variable"
+   for the exact current syntax, since it's a two-line addition to Vite's
+   standard config-function pattern):
+     - load the mode's env vars (Vite's own env-loading helper)
+     - return a config object with a top-level `define` key
+     - inside `define`, set __ANTHROPIC_API_KEY__ to the JSON-stringified
+       value of VITE_ANTHROPIC_API_KEY from the loaded env
+4. On your host (Vercel/Netlify/etc), set VITE_ANTHROPIC_API_KEY in the
+   project's dashboard environment variables — .env.local itself never
+   gets deployed, but the host needs the same value at its own build step.
+5. Rebuild/redeploy. The header's "🤖 AI Ready" / "⚠ No AI Key" badge tells
+   you at a glance whether it's wired up correctly.
+
+Real tradeoff worth knowing: this key is visible in your deployed site's
+browser bundle to anyone who opens dev tools — the sign-in wall keeps casual
+visitors out, but isn't airtight security. A spending limit on your
+Anthropic account (console.anthropic.com > billing) is the simplest hedge.
+────────────────────────────────────────────────────────────────────────────
+
+SETUP NOTES — Brand assets (logo, favicon)
+
+logo-512.png, logo-192.png, favicon-64.png, and favicon-32.png ship alongside
+this file. For the standalone deployment, drop them in your Vite project's
+/public folder (referenced here as /logo-192.png) — the header and sign-in
+screen logo will pick it up automatically. If the file isn't found (e.g.
+inside a Claude.ai artifact, which can't host static files), the UI falls
+back to a gradient glyph automatically — nothing breaks either way.
+Set favicon-32.png as your favicon in index.html's <link rel="icon"> tag.
+──────────────────────────────────────────────────────────────────────────── */
