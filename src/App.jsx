@@ -36,8 +36,8 @@ function setUserApiKey(key){
 // the bottom of this file). Leaving the placeholder makes the app run in
 // local-only mode automatically — nothing breaks if you skip this.
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  projectId: "YOUR_PROJECT_ID",
+  apiKey: "AIzaSyCfdsnnux0j8z0Llw-0qiNkkbLgytMs79g",
+  projectId: "cascadia-fishing",
 };
 const isFirebaseConfigured = () => firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY" && firebaseConfig.projectId && firebaseConfig.projectId !== "YOUR_PROJECT_ID";
 
