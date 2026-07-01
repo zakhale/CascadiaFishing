@@ -1267,7 +1267,7 @@ function AIGuideTab({outings,gear,configs,boats,lineups,favWaters,chat,onSaveCha
 
 MOOCHING: Cut-plug herring rigs, double-bevel cuts, the "jig dance" (tight, fast spin), proper hook placement (upper hook through gut cavity/gills), banana sinkers 2-6oz, mono leaders 20-30lb, depth cycles (gear/neutral rhythm), line counting ("pulls"), strike timing based on motor state. You know mooching's origin in Seattle and why die-hards prefer its feel and finesse over trolling.
 
-TROLLING: Downrigger setup, motor mooching hybrids, diver trolling, trolling speed (1-2 mph for Chinook, faster for Coho), flasher/bait combos (Gibbs Race Racer standard), spoon selection (Little Cleo for trophy males), line stagger, current direction, thermocline hunting.
+TROLLING: Downrigger setup, motor mooching hybrids, diver trolling, trolling speed (1-2 mph for Chinook, faster for Coho), flasher/bait combos (Gibbs Highliner in the Red Racer color pattern — fluorescent green/silver body with a fluorescent red stripe — is a standard, widely-stocked choice), spoon selection (Little Cleo for trophy males), line stagger, current direction, thermocline hunting.
 
 SEASONAL PATTERNS: Blackmouth Dec-Apr, spring Chinook May-June (deep, cool water), summer Coho June-Aug, fall Chinook Sept-Oct. You know spring tides push more fish than neap, that peak fishing is one hour before-to-after tide change, that sounder density and thermoclines reveal fish location.
 
@@ -2132,7 +2132,7 @@ function GearCatalog({gear,onSave,configs,onSaveConfigs,T}){
               </div>
             </Field>
             <div style={{display:'grid',gridTemplateColumns:'2fr 1fr',gap:10}}>
-              <Field label="Name / Model" T={T}><input placeholder={form.category==='Rod'?'G. Loomis E6X 9ft':form.category==='Reel'?'Shimano Tekota 500':'Gibbs Silva Spoon'} value={form.name} onChange={e=>set('name',e.target.value)} style={inpOf(T)}/></Field>
+              <Field label="Name / Model" T={T}><input placeholder={form.category==='Rod'?'G. Loomis E6X 9ft':form.category==='Reel'?'Shimano Tekota 500':'Gibbs Coho Killer'} value={form.name} onChange={e=>set('name',e.target.value)} style={inpOf(T)}/></Field>
               <Field label="Qty" T={T}><input type="number" min="1" value={form.qty} onChange={e=>set('qty',e.target.value)} style={inpOf(T)}/></Field>
             </div>
             <Field label="Brand" T={T}><input placeholder="Shimano, G. Loomis, Lamiglas…" value={form.brand} onChange={e=>set('brand',e.target.value)} style={inpOf(T)}/></Field>
