@@ -51,8 +51,8 @@ async function fbSignIn(email, password){
     });
     const d = await r.json();
     if(d.error) throw new Error(d.error.message==='INVALID_LOGIN_CREDENTIALS' ? 'Incorrect email or password.' : (d.error.message||'Sign-in failed'));
-    fbTokens = { idToken:d.idToken, refreshToken:d.refreshToken, expiresAt:Date.now()+Number(d.expiresIn)*1000, uid:d.localId };
-    return fbTokens.uid;
+    fbTokens = { idToken:d.idToken, refreshToken:d.refreshToken, expiresAt:Date.now()+Number(d.expiresIn)*1000, uid:d.localId, email:d.email };
+    return {uid:fbTokens.uid, email:fbTokens.email};
   }catch(e){
     throw new Error(e.message.includes('Failed to fetch') ? 'Network error — check your connection.' : e.message);
   }
@@ -107,6 +107,25 @@ async function getCachedRefreshToken(){
     }
   }catch{}
   try{ return localStorage.getItem('fb_refresh') || null; }catch{ return null; }
+}
+// Companion cache for the signed-in email — the token-refresh endpoint doesn't
+// return email, only sign-in does, so this is needed to show the account
+// indicator on a returning visit that silently re-authenticates via refresh
+// token alone (no fresh email/password entry, hence no email in that response).
+async function cacheEmail(email){
+  try{
+    if(typeof window!=='undefined' && window.storage){ await window.storage.set('fb_email', email||''); return; }
+  }catch{}
+  try{ localStorage.setItem('fb_email', email||''); }catch{}
+}
+async function getCachedEmail(){
+  try{
+    if(typeof window!=='undefined' && window.storage){
+      const r = await window.storage.get('fb_email');
+      if(r?.value) return r.value;
+    }
+  }catch{}
+  try{ return localStorage.getItem('fb_email') || null; }catch{ return null; }
 }
 
 // Firestore REST — documents live at users/{uid}/data/{key}, one doc per storage key.
@@ -624,7 +643,7 @@ function StatusPill({status,T}){
 // now merged into one TripPlannerTool below.
 
 // ══════════════════════════════════════════════════════════════════════════════
-function BlackmouthApp({syncStatus,onSignOut}){
+function BlackmouthApp({syncStatus,onSignOut,userEmail}){
   const [dark,setDark]         = useState(true);
   const [tab,setTab]           = useState(0);
   const [outings,setOutings]   = useState([]);
@@ -722,7 +741,7 @@ function BlackmouthApp({syncStatus,onSignOut}){
               <div style={{fontSize:17,fontWeight:'700',color:T.text,letterSpacing:-.2,fontFamily:F}}>Blackmouth<span style={{color:T.hot}}>.AI</span></div>
               <div style={{fontSize:10,color:T.sub,letterSpacing:1,fontFamily:F,textTransform:'uppercase'}}>{monthName()} {thisYear()} · {currentSeason()}{homePort?` · ${homePort.name}`:''}</div>
             </div>
-            <div style={{display:'flex',alignItems:'center',gap:6}}>
+            <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',justifyContent:'flex-end'}}>
               {syncStatus==='synced'&&<span title="Synced to your account" style={{fontSize:10,color:T.accent,fontFamily:F}}>☁ Synced</span>}
               {syncStatus==='local'&&<span title="Saved to this Claude account only" style={{fontSize:10,color:T.sub,fontFamily:F}}>📱 Local only</span>}
               {hasApiKey
@@ -730,9 +749,20 @@ function BlackmouthApp({syncStatus,onSignOut}){
                 : <span onClick={()=>setTab(7)} title="No Anthropic API key set — tap to add yours in Settings" style={{fontSize:10,color:T.err,fontFamily:F,cursor:'pointer',textDecoration:'underline'}}>⚠ No AI Key</span>
               }
               <button onClick={toggleDark} style={{...btnOf(T,'ghost'),padding:'5px 11px',fontSize:12}}>{dark?'☀️ Light':'🌑 Dark'}</button>
-              {syncStatus==='synced'&&onSignOut&&<button onClick={onSignOut} style={{...btnOf(T,'ghost'),padding:'5px 9px',fontSize:11}}>Sign out</button>}
             </div>
           </div>
+          {/* Account indicator — always visible when signed in, so there's never
+              any doubt about login state. No "Log in" toggle needed here: when
+              signed out, SignInScreen replaces this entire page, so the only
+              state this bar ever needs to represent is "signed in as X". */}
+          {syncStatus==='synced'&&(
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,padding:'7px 12px',marginBottom:10,background:T.muted,border:`1px solid ${T.border}`,borderRadius:8}}>
+              <span style={{fontSize:12,color:T.text,fontFamily:F,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                👤 {userEmail || 'Signed in'}
+              </span>
+              {onSignOut&&<button onClick={onSignOut} style={{...btnOf(T,'ghost'),padding:'4px 10px',fontSize:11,flexShrink:0}}>Sign out</button>}
+            </div>
+          )}
           <div style={{display:'flex',overflowX:'auto',gap:2,scrollbarWidth:'none'}}>
             {TABS.map((t,i)=>(
               (t==='Settings'&&isInClaudeArtifact()) ? null :
@@ -2476,6 +2506,7 @@ export default function Root(){
   const [authState,setAuthState] = useState(isFirebaseConfigured() ? 'loading' : 'local');
   const [authError,setAuthError] = useState('');
   const [authBusy,setAuthBusy] = useState(false);
+  const [userEmail,setUserEmail] = useState('');
 
   useEffect(()=>{
     if(!isFirebaseConfigured()){ setSyncUser(null); return; }
@@ -2488,6 +2519,9 @@ export default function Root(){
           await fbRefresh(cached);
           setSyncUser(fbTokens.uid);
           await cacheRefreshToken(fbTokens.refreshToken);
+          // Refresh doesn't return email — pull the one cached at last sign-in.
+          const cachedEmail = await getCachedEmail();
+          if(cachedEmail) setUserEmail(cachedEmail);
           setAuthState('signedIn');
           return;
         }
@@ -2499,9 +2533,11 @@ export default function Root(){
   const handleSignIn = async (email,password)=>{
     setAuthBusy(true); setAuthError('');
     try{
-      const uid = await fbSignIn(email,password);
+      const {uid} = await fbSignIn(email,password);
       setSyncUser(uid);
+      setUserEmail(email);
       await cacheRefreshToken(fbTokens.refreshToken);
+      await cacheEmail(email);
       setAuthState('signedIn');
     }catch(e){
       setAuthError(e.message || 'Sign-in failed — check your email and password.');
@@ -2512,6 +2548,8 @@ export default function Root(){
   const handleSignOut = ()=>{
     fbSignOut(); setSyncUser(null);
     cacheRefreshToken(null);
+    cacheEmail(null);
+    setUserEmail('');
     setAuthState('signedOut');
   };
 
@@ -2521,7 +2559,7 @@ export default function Root(){
   if(authState==='signedOut'){
     return <SignInScreen onSignIn={handleSignIn} error={authError} busy={authBusy}/>;
   }
-  return <BlackmouthApp syncStatus={authState==='signedIn'?'synced':'local'} onSignOut={authState==='signedIn'?handleSignOut:null}/>;
+  return <BlackmouthApp syncStatus={authState==='signedIn'?'synced':'local'} onSignOut={authState==='signedIn'?handleSignOut:null} userEmail={userEmail}/>;
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
