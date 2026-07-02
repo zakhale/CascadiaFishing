@@ -252,7 +252,61 @@ function BrandMark({T,size=34}){
 }
 
 // ── Constants ───────────────────────────────────────────────────────────────
-const TABS = ["AI Guide","Dashboard","My Waters","Log","Gear","Regs","History","Account"];
+const TABS = ["Tyee","Dashboard","My Waters","Log","Gear","Regs","History","Account"];
+
+// ── Identity System dependency isolation ─────────────────────────────────────
+// Every UI element that depends on the in-development BLACKMOUTH.AI production
+// assets (Field Manual §Placeholder Assets) resolves through this registry.
+// When the master vector illustration, pose library, and icon library ship,
+// they get wired here — no interface redesign required. All values are null
+// until the assets exist; components must render a canon-safe fallback.
+const TYEE_ASSETS = {
+  coreMark: null,        // Master vector illustration — Core Tyee (BrandMark fallback: /logo-192.png → ≋ glyph)
+  variants: { scout:null, navigator:null, hunter:null, captain:null }, // Pose library
+  stateArt: { Reading:null, Pattern:null, Locked:null, Commit:null, Advantage:null }, // Expression/turnaround sheets
+  icons: null,           // Icon library — until it ships, UI uses plain text, no emoji glyphs
+};
+
+// Motion doctrine (Field Manual + Addendum): like water and current.
+// Nothing snaps, nothing bounces — one shared glide curve everywhere.
+const EASE = 'cubic-bezier(0.4, 0, 0.2, 1)';
+const GLIDE = `.45s ${EASE}`;
+
+// ── Tyee Confidence States (Character_Canon.md v1.0 — immutable names/order) ──
+// States of certainty, not emotions. Colors are PROVISIONAL, sampled from the
+// draft concept board (slate → purple iridescence deepening toward blackmouth);
+// swap for final tokens when BLACKMOUTH.AI Brand Standards are frozen.
+// `art` is a reserved slot for the Tyee posture illustration for each state —
+// per canon these must come from the approved illustration system, not be
+// invented here. Until vector assets exist, the badge renders label + meter only.
+const CONFIDENCE_STATES = [
+  {key:'Reading',   desc:'Not enough evidence yet',   color:'#6b6e73'},
+  {key:'Pattern',   desc:'Something is repeating',    color:'#7a6488', },
+  {key:'Locked',    desc:'This is real',              color:'#5c4a6b', },
+  {key:'Commit',    desc:'Now',                       color:'#4a3a52', },
+  {key:'Advantage', desc:'Everyone else is late',     color:'#1a1a1c', },
+];
+const STATE_TAG_RE = /\[STATE:(Reading|Pattern|Locked|Commit|Advantage)\]\s*$/;
+
+// Badge showing Tyee's current state of certainty on a response.
+// Motion doctrine: nothing bounces — the fill glides in like current.
+function ConfidenceBadge({state,T}){
+  const idx = CONFIDENCE_STATES.findIndex(s=>s.key===state);
+  if(idx<0) return null;
+  const s = CONFIDENCE_STATES[idx];
+  const art = TYEE_ASSETS.stateArt[s.key]; // Tyee posture illustration — pending pose library
+  return(
+    <div title={s.desc} style={{display:'inline-flex',alignItems:'center',gap:7,marginBottom:5}}>
+      {art&&<img src={art} alt={`Tyee — ${s.key}`} width={18} height={18} style={{display:'block'}}/>}
+      <span style={{fontSize:10,letterSpacing:1.4,textTransform:'uppercase',fontWeight:'700',color:s.color,fontFamily:F}}>{s.key}</span>
+      <span style={{display:'inline-flex',gap:3}}>
+        {CONFIDENCE_STATES.map((cs,i)=>(
+          <span key={cs.key} style={{width:14,height:4,borderRadius:2,background:i<=idx?s.color:T.border,opacity:i<=idx?1:0.6,transition:`background .6s ${EASE}, opacity .6s ${EASE}`}}/>
+        ))}
+      </span>
+    </div>
+  );
+}
 const SPECIES = ["Chinook (King)","Coho (Silver)","Pink (Humpy)","Chum (Dog)","Sockeye (Red)",
   "Kokanee","Steelhead","Sea-run Cutthroat","Trout (Resident)","Largemouth Bass","Smallmouth Bass","Other"];
 const TECHNIQUES = ["Trolling","Mooching","Jigging","Drift Fishing","Casting – Spoon",
@@ -753,7 +807,7 @@ async function fetchTides(lat,lng){
 const cardOf=(T,extra={})=>({background:T.surface,borderRadius:14,padding:16,border:`1px solid ${T.border}`,...extra});
 const inpOf=T=>({padding:'10px 12px',background:T.bg,border:`1px solid ${T.border}`,borderRadius:9,color:T.text,fontFamily:F,fontSize:14,boxSizing:'border-box',outline:'none',width:'100%'});
 const btnOf=(T,v='primary')=>{
-  const b={padding:'10px 20px',border:'none',borderRadius:9,cursor:'pointer',fontFamily:F,fontSize:14,fontWeight:'500',transition:'opacity .12s'};
+  const b={padding:'10px 20px',border:'none',borderRadius:9,cursor:'pointer',fontFamily:F,fontSize:14,fontWeight:'500',transition:`opacity ${GLIDE}`};
   if(v==='green') return{...b,background:T.accent,color:'#fff'};
   if(v==='ghost') return{...b,background:'transparent',color:T.sub,border:`1px solid ${T.border}`};
   return{...b,background:T.hot,color:'#fff'};
@@ -779,7 +833,7 @@ function SectionHead({children,T}){
 function Chip({label,active,color,T,onClick}){
   const c=color||T.hot;
   return(
-    <button onClick={onClick} style={{padding:'5px 12px',borderRadius:20,border:`1.5px solid ${active?c:T.border}`,background:active?c:'transparent',color:active?'#fff':T.sub,cursor:'pointer',fontSize:12,fontFamily:F,transition:'all .12s',lineHeight:1.4}}>
+    <button onClick={onClick} style={{padding:'5px 12px',borderRadius:20,border:`1.5px solid ${active?c:T.border}`,background:active?c:'transparent',color:active?'#fff':T.sub,cursor:'pointer',fontSize:12,fontFamily:F,transition:`all ${GLIDE}`,lineHeight:1.4}}>
       {label}
     </button>
   );
@@ -892,11 +946,11 @@ function BlackmouthApp({syncStatus,onSignOut,userEmail}){
               <div style={{fontSize:10,color:T.sub,letterSpacing:1,fontFamily:F,textTransform:'uppercase'}}>{monthName()} {thisYear()} · {currentSeason()}{homePort?` · ${homePort.name}`:''}</div>
             </div>
             <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',justifyContent:'flex-end'}}>
-              {syncStatus==='synced'&&<span title="Synced to your account" style={{fontSize:10,color:T.accent,fontFamily:F}}>☁ Synced</span>}
-              {syncStatus==='local'&&<span title="Saved to this Claude account only" style={{fontSize:10,color:T.sub,fontFamily:F}}>📱 Local only</span>}
+              {syncStatus==='synced'&&<span title="Synced to your account" style={{fontSize:10,color:T.accent,fontFamily:F}}>Synced</span>}
+              {syncStatus==='local'&&<span title="Saved to this Claude account only" style={{fontSize:10,color:T.sub,fontFamily:F}}>Local only</span>}
               {hasApiKey
-                ? <span title="AI Guide is connected and ready" style={{fontSize:12,color:'#fff',background:T.accent,padding:'4px 10px',borderRadius:20,fontWeight:'700',fontFamily:F,whiteSpace:'nowrap'}}>🤖 AI Ready</span>
-                : <span onClick={()=>setTab(7)} title="No Anthropic API key set — tap to add yours in Account" style={{fontSize:12,color:'#fff',background:T.err,padding:'4px 10px',borderRadius:20,fontWeight:'700',fontFamily:F,cursor:'pointer',whiteSpace:'nowrap'}}>⚠ No AI Key</span>
+                ? <span title="Tyee — your AI guide — is connected and ready" style={{fontSize:11,color:T.accent,border:`1px solid ${T.accent}55`,padding:'3px 10px',borderRadius:20,fontWeight:'600',fontFamily:F,whiteSpace:'nowrap'}}>Tyee ready</span>
+                : <span onClick={()=>setTab(7)} title="No Anthropic API key set — tap to add yours in Account" style={{fontSize:11,color:T.err,border:`1px solid ${T.err}66`,padding:'3px 10px',borderRadius:20,fontWeight:'600',fontFamily:F,cursor:'pointer',whiteSpace:'nowrap'}}>Add API key</span>
               }
               <button onClick={toggleDark} style={{...btnOf(T,'ghost'),padding:'5px 11px',fontSize:12}}>{dark?'☀️ Light':'🌑 Dark'}</button>
             </div>
@@ -908,7 +962,7 @@ function BlackmouthApp({syncStatus,onSignOut,userEmail}){
           {syncStatus==='synced'&&(
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,padding:'7px 12px',marginBottom:10,background:T.muted,border:`1px solid ${T.border}`,borderRadius:8}}>
               <span style={{fontSize:12,color:T.text,fontFamily:F,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-                👤 {userEmail || 'Signed in'}
+                {userEmail || 'Signed in'}
               </span>
               {onSignOut&&<button onClick={onSignOut} style={{...btnOf(T,'ghost'),padding:'4px 10px',fontSize:11,flexShrink:0}}>Sign out</button>}
             </div>
@@ -916,7 +970,7 @@ function BlackmouthApp({syncStatus,onSignOut,userEmail}){
           <div style={{display:'flex',overflowX:'auto',gap:2,scrollbarWidth:'none'}}>
             {TABS.map((t,i)=>(
               (t==='Settings'&&isInClaudeArtifact()) ? null :
-              <button key={t} onClick={()=>setTab(i)} style={{padding:'7px 13px',borderRadius:'8px 8px 0 0',border:'none',cursor:'pointer',fontSize:12,fontWeight:tab===i?'600':'400',fontFamily:F,whiteSpace:'nowrap',flexShrink:0,background:'transparent',color:tab===i?T.text:T.sub,borderBottom:tab===i?`2px solid ${T.hot}`:'2px solid transparent',transition:'all .12s'}}>{t}</button>
+              <button key={t} onClick={()=>setTab(i)} style={{padding:'7px 13px',borderRadius:'8px 8px 0 0',border:'none',cursor:'pointer',fontSize:12,fontWeight:tab===i?'600':'400',fontFamily:F,whiteSpace:'nowrap',flexShrink:0,background:'transparent',color:tab===i?T.text:T.sub,borderBottom:tab===i?`2px solid ${T.hot}`:'2px solid transparent',transition:`all ${GLIDE}`}}>{t}</button>
             ))}
           </div>
         </div>
@@ -975,10 +1029,26 @@ function TideCurve({tides,T}){
   const range=maxY-minY||1;
   const sx=x=>PAD+(x/1440)*(W-PAD*2);
   const sy=y=>H-PAD-((y-minY)/range)*(H-PAD*2);
-  const d=pts.map((p,i)=>`${i===0?'M':'L'}${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(' ');
+  const d=(()=>{
+    // Shape language (Field Manual §4): S-curves, not mechanical segments.
+    // Catmull-Rom → cubic Bézier through the tide points — the curve a tide
+    // actually draws, instead of straight lines between highs and lows.
+    const P=pts.map(p=>({x:sx(p.x),y:sy(p.y)}));
+    if(P.length===2) return `M${P[0].x.toFixed(1)},${P[0].y.toFixed(1)} L${P[1].x.toFixed(1)},${P[1].y.toFixed(1)}`;
+    let path=`M${P[0].x.toFixed(1)},${P[0].y.toFixed(1)}`;
+    for(let i=0;i<P.length-1;i++){
+      const p0=P[i-1]||P[i], p1=P[i], p2=P[i+1], p3=P[i+2]||p2;
+      const c1x=p1.x+(p2.x-p0.x)/6, c1y=p1.y+(p2.y-p0.y)/6;
+      const c2x=p2.x-(p3.x-p1.x)/6, c2y=p2.y-(p3.y-p1.y)/6;
+      path+=` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
+    }
+    return path;
+  })();
   const now=new Date(); const nowMin=now.getHours()*60+now.getMinutes();
   return(
     <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} style={{marginBottom:8,display:'block'}}>
+      {/* Soft fill under the curve — water, not a chart grid */}
+      <path d={`${d} L${sx(pts[pts.length-1].x).toFixed(1)},${H-2} L${sx(pts[0].x).toFixed(1)},${H-2} Z`} fill={T.accent} opacity="0.08"/>
       <path d={d} fill="none" stroke={T.accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
       {pts.map((p,i)=>(<circle key={i} cx={sx(p.x)} cy={sy(p.y)} r="2.5" fill={T.accent}/>))}
       {nowMin>=0&&nowMin<=1440&&<line x1={sx(nowMin)} y1={PAD-2} x2={sx(nowMin)} y2={H-PAD+2} stroke={T.hot} strokeWidth="1.5" strokeDasharray="3,3"/>}
@@ -1007,20 +1077,24 @@ function tideBaitForecast(todayTides, forageEntry){
 
   const forage = forageEntry?.forage?.split(' (')[0]?.split(' + ')[0] || 'bait';
 
-  // Terse, rule-based combinations — a handful of solid PNW patterns, not an exhaustive model
+  // Terse, rule-based combinations — a handful of solid PNW patterns, not an exhaustive model.
+  // Each pattern carries a canonical confidence state. Because this is a heuristic
+  // (tide phase × light only — no live sounder/creel/weather input), certainty is
+  // deliberately capped at Locked. Commit/Advantage are reserved for evidence-backed
+  // calls from Tyee — the model never inflates certainty, and neither does this.
   if(phase==='flooding' && (light==='first light'||light==='dusk')){
-    return `Flood tide meets ${light} — ${forage.toLowerCase()} pushed onto the flats. Bite window likely within the hour either side of the turn.`;
+    return {state:'Locked', line:`Flood tide meets ${light} — ${forage.toLowerCase()} pushed onto the flats. Bite window likely within the hour either side of the turn.`};
   }
   if(phase==='flooding'){
-    return `Incoming tide, ${light} — bait moving with the current. Fishable, but the low-light turn windows usually outfish flat midday flood.`;
+    return {state:'Pattern', line:`Incoming tide, ${light} — bait moving with the current. Fishable, but the low-light turn windows usually outfish flat midday flood.`};
   }
   if(phase==='ebbing' && (light==='first light'||light==='dusk')){
-    return `Ebb tide at ${light} — bait draining off the flats toward deeper water. Follow it out; edges and drop-offs worth a look.`;
+    return {state:'Pattern', line:`Ebb tide at ${light} — bait draining off the flats toward deeper water. Follow it out; edges and drop-offs worth a look.`};
   }
   if(phase==='ebbing'){
-    return `Outgoing tide, ${light} — current pulling bait toward channels. Expect more scattered activity than a low-light exchange.`;
+    return {state:'Reading', line:`Outgoing tide, ${light} — current pulling bait toward channels. Expect more scattered activity than a low-light exchange.`};
   }
-  return `Near slack water, ${light} — minimal current means less bait movement. Often the slower part of the cycle; the turn coming up is worth timing for.`;
+  return {state:'Reading', line:`Near slack water, ${light} — minimal current means less bait movement. Often the slower part of the cycle; the turn coming up is worth timing for.`};
 }
 
 function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick,onTabChange,T}){
@@ -1060,7 +1134,9 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
   }).slice(0,4);
   const [forageOpen,setForageOpen] = useState(false);
   const currentForage = FORAGE_CALENDAR[new Date().getMonth()];
-  const forecastLine = tideBaitForecast(todayTides, currentForage) || '';
+  const forecast = tideBaitForecast(todayTides, currentForage);
+  const forecastLine = forecast?.line || '';
+  const forecastState = forecast?.state || null;
 
   const tipMap={
     Spring:[
@@ -1147,7 +1223,10 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
                 <span style={{fontSize:11,color:T.accent,fontFamily:F}}>{forageOpen?'less ▲':'more ▼'}</span>
               </div>
               <TideCurve tides={todayTides} T={T}/>
-              <div style={{fontSize:12,color:T.text,lineHeight:1.55,fontFamily:F,marginTop:4}}>{forecastLine}</div>
+              <div style={{marginTop:6}}>
+                {forecastState&&<ConfidenceBadge state={forecastState} T={T}/>}
+                <div style={{fontSize:12,color:T.text,lineHeight:1.55,fontFamily:F}}>{forecastLine}</div>
+              </div>
 
               {forageOpen&&(
                 <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${T.border}`}}>
@@ -1161,7 +1240,7 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
                   <div style={{fontSize:10,color:T.dim,marginTop:8,marginBottom:4,fontFamily:F,letterSpacing:1,textTransform:'uppercase'}}>This Month's Forage</div>
                   <div style={{fontSize:13,color:T.text,fontWeight:'600',fontFamily:F,marginBottom:3}}>{currentForage.forage}</div>
                   <div style={{fontSize:12,color:T.sub,fontFamily:F,marginBottom:6,lineHeight:1.5}}>{currentForage.detail}</div>
-                  <div style={{fontSize:12,color:T.accent,fontFamily:F,fontStyle:'italic'}}>💡 {currentForage.tip}</div>
+                  <div style={{fontSize:12,color:T.accent,fontFamily:F,fontStyle:'italic'}}>{currentForage.tip}</div>
                   <div style={{fontSize:10,color:T.dim,marginTop:8,fontFamily:F}}>Rule-based estimate, not AI-generated — approximate, varies year to year.</div>
                 </div>
               )}
@@ -1245,7 +1324,7 @@ function DashboardTab({outings,favWaters,homePort,dailyData,onSetHP,onWaterClick
   );
 }
 
-// ── AI Guide Tab ────────────────────────────────────────────────────────────
+// ── Tyee (AI Guide) Tab ────────────────────────────────────────────────────────────
 function AIGuideTab({outings,gear,configs,boats,lineups,favWaters,chat,onSaveChat,preFill,onClearPreFill,onPrint,T}){
   const [input,setInput]     = useState('');
   const [loading,setLoading] = useState(false);
@@ -1311,7 +1390,9 @@ CRITICAL: Keep responses SHORT and DIRECT. 1-2 sentences max for answers. Bullet
 
 If user wants more detail, they'll ask "tell me more" or "explain X" — then expand. But default to brevity. Expert to expert.
 
-Be specific: use WDFW marine area numbers, name specific spots, flag mark-selective/hatchery/size rules. Use web search for current WDFW regulations, creel data, and conditions. Verify: wdfw.wa.gov.`;
+Be specific: use WDFW marine area numbers, name specific spots, flag mark-selective/hatchery/size rules. Use web search for current WDFW regulations, creel data, and conditions. Verify: wdfw.wa.gov.
+
+CONFIDENCE STATE: End every response with exactly one tag on its own line: [STATE:Reading], [STATE:Pattern], [STATE:Locked], [STATE:Commit], or [STATE:Advantage]. This reflects how certain you are in the recommendation you just gave — Reading = insufficient evidence/need clarification, Pattern = emerging signal, Locked = strong confidence backed by data, Commit = act on this now, Advantage = high-confidence edge most anglers will miss. Base it on evidence quality (verified regs, recent creel data, current conditions vs. general knowledge). Never inflate certainty.`;
 
   const send = async(msg,toolLabel)=>{
     const text=(msg||input).trim();
@@ -1322,7 +1403,10 @@ Be specific: use WDFW marine area numbers, name specific spots, flag mark-select
     setInput('');setLoading(true);
     try{
       const reply=await askClaude(newH,buildSystem(),{maxTokens:1000,webSearch:true});
-      onSaveChat([...newH,{role:'assistant',content:reply,toolLabel}]);
+      const m=reply.match(STATE_TAG_RE);
+      const state=m?m[1]:null;
+      const clean=state?reply.replace(STATE_TAG_RE,'').trimEnd():reply;
+      onSaveChat([...newH,{role:'assistant',content:clean,state,toolLabel}]);
     }catch(e){
       const errorMsg = e.message || 'Connection error — check your network and try again.';
       onSaveChat([...newH,{role:'assistant',content:`Error: ${errorMsg}`,toolLabel}]);
@@ -1332,6 +1416,16 @@ Be specific: use WDFW marine area numbers, name specific spots, flag mark-select
 
 
   const PROMPT_CATS=[
+    // TEMPORARY — confidence-state calibration set. One-tap tests for the
+    // [STATE:x] tagging. Expected: Q1 → Reading (must ask which county, not
+    // guess), Q2 → Locked-ish (solid seasonal knowledge), Q3 → Locked/Commit
+    // only if web search returns current verified regs. Remove this category
+    // once calibration is confirmed.
+    {cat:'⟡ Calibration (dev — remove after tuning)',prompts:[
+      "How's Clear Lake fishing?",
+      'Best blackmouth depth and setup for MA10 in January?',
+      'Is MA9 open for hatchery Chinook right now? Check current regs.',
+    ]},
     {cat:'Right Now',prompts:[
       'What should I target right now given the season and conditions?',
       "What's actively biting in Puget Sound this week?",
@@ -1374,7 +1468,8 @@ Be specific: use WDFW marine area numbers, name specific spots, flag mark-select
 
       {/* Ask your guide — primary entry point for this page */}
       <div style={{...cardOf(T),background:`linear-gradient(135deg,${T.hot}14,${T.accent}0a)`,border:`1px solid ${T.hot}44`}}>
-        <div style={{fontSize:13,color:T.sub,marginBottom:10,fontFamily:F}}>Ask your guide anything — spots, regulations, conditions, gear, what to do next.</div>
+        <div style={{fontSize:15,fontWeight:'700',color:T.text,marginBottom:2,fontFamily:F}}>Tyee</div>
+        <div style={{fontSize:13,color:T.sub,marginBottom:10,fontFamily:F}}>Your AI guide. Ask in plain language — he reads the tides, regs, forage, and your own logs, then tells you the play.</div>
         <div style={{display:'flex',gap:8}}>
           <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}}} placeholder="What should I fish for right now?" autoFocus style={{...inpOf(T),flex:1,fontSize:15,padding:'12px 14px'}} disabled={loading}/>
           <button onClick={()=>send()} disabled={loading||!input.trim()} style={{...btnOf(T),paddingLeft:24,paddingRight:24,fontSize:15,opacity:loading||!input.trim()?0.5:1}}>Ask</button>
@@ -1384,10 +1479,11 @@ Be specific: use WDFW marine area numbers, name specific spots, flag mark-select
       {/* Chat */}
       <div ref={chatBoxRef} style={{...cardOf(T),padding:12,minHeight:220,maxHeight:440,overflowY:'auto',display:'flex',flexDirection:'column',gap:10}}>
         {chat.length===0&&!loading&&(
-          <div style={{color:T.sub,fontSize:13,textAlign:'center',margin:'auto',fontFamily:F}}>Your expert western Washington fishing guide — ask anything.</div>
+          <div style={{color:T.sub,fontSize:13,textAlign:'center',margin:'auto',fontFamily:F}}>Tyee is reading the water. Ask him anything — western WA, Puget Sound, the Salish Sea.</div>
         )}
         {chat.map((m,i)=>(
           <div key={i} style={{alignSelf:m.role==='user'?'flex-end':'flex-start',maxWidth:'88%'}}>
+            {m.role==='assistant'&&m.state&&<ConfidenceBadge state={m.state} T={T}/>}
             <div style={{background:m.role==='user'?T.hot:T.lift,color:m.role==='user'?'#fff':T.text,borderRadius:m.role==='user'?'14px 14px 4px 14px':'14px 14px 14px 4px',padding:'10px 14px',fontSize:14,lineHeight:1.65,whiteSpace:'pre-wrap',fontFamily:F}}>
               {m.content}
             </div>
@@ -1398,7 +1494,7 @@ Be specific: use WDFW marine area numbers, name specific spots, flag mark-select
             )}
           </div>
         ))}
-        {loading&&<div style={{color:T.sub,fontSize:13,fontStyle:'italic',fontFamily:F}}>Searching current conditions and regulations…</div>}
+        {loading&&<div style={{color:T.sub,fontSize:13,fontStyle:'italic',fontFamily:F}}>Reading — checking current conditions, regs, and creel data…</div>}
       </div>
       {chat.length>0&&<button onClick={()=>onSaveChat([])} style={{background:'none',border:'none',color:T.sub,fontSize:12,cursor:'pointer',textAlign:'left',fontFamily:F}}>Clear chat</button>}
 
@@ -1627,7 +1723,7 @@ Use: "open","closed","limited","unknown". Max 4 relevant species. Month: ${month
         <div style={{fontSize:11,color:T.sub,marginTop:8,fontFamily:F}}>Fetches live regulation status via WDFW. Always verify at wdfw.wa.gov.</div>
       </div>
 
-      {favWaters.length===0&&<div style={{...cardOf(T),color:T.sub,fontSize:13,textAlign:'center',padding:32,fontFamily:F}}>No favorite waters saved yet.</div>}
+      {favWaters.length===0&&<div style={{...cardOf(T),color:T.sub,fontSize:13,textAlign:'center',padding:32,fontFamily:F}}>No waters saved yet. Add the spots you fish — Tyee reads them when planning your trips.</div>}
 
       {favWaters.map((w,idx)=>(
         <div key={w.id}
@@ -2219,7 +2315,7 @@ function GearCatalog({gear,onSave,configs,onSaveConfigs,T}){
 
       <div style={cardOf(T)}>
         <SectionHead T={T}>Gear Bag ({gear.length})</SectionHead>
-        {gear.length===0&&<div style={{color:T.sub,fontSize:13,fontFamily:F}}>No gear logged yet — accuracy here helps the AI Guide recommend the right setup as conditions change.</div>}
+        {gear.length===0&&<div style={{color:T.sub,fontSize:13,fontFamily:F}}>No gear logged yet — accuracy here helps Tyee recommend the right setup as conditions change.</div>}
         {gear.length>1&&<div style={{fontSize:11,color:T.dim,fontFamily:F,marginBottom:8}}>↕ Drag items within a category to reorder them however you prefer.</div>}
         {grouped.map(({cat,items})=>(
           <div key={cat} style={{marginBottom:14}}>
@@ -2275,7 +2371,7 @@ function GearCatalog({gear,onSave,configs,onSaveConfigs,T}){
             <input placeholder="Name (optional)" value={cfgName} onChange={e=>setCfgName(e.target.value)} style={{...inpOf(T),fontSize:13}}/>
             <button onClick={addConfig} disabled={!cfgRod||!cfgReel} style={{...btnOf(T,'green'),padding:'8px 14px',fontSize:13,opacity:(!cfgRod||!cfgReel)?0.5:1}}>Add</button>
           </div>
-          {configs.length===0&&<div style={{fontSize:12,color:T.sub,fontFamily:F,fontStyle:'italic'}}>No configurations yet.</div>}
+          {configs.length===0&&<div style={{fontSize:12,color:T.sub,fontFamily:F,fontStyle:'italic'}}>No rod+reel configs yet. Pair them up so trip plans name the exact setup.</div>}
           {configs.map(c=>{
             const rod=rods.find(r=>String(r.id)===String(c.rodId));
             const reel=reels.find(r=>String(r.id)===String(c.reelId));
@@ -2344,7 +2440,7 @@ function BoatCatalog({boats,onSaveBoats,T}){
         )}
       </div>
       <div style={cardOf(T)}>
-        {boats.length===0&&<div style={{color:T.sub,fontSize:13,fontFamily:F}}>No boats logged yet. Add yours so the AI Guide can recommend launches that fit it.</div>}
+        {boats.length===0&&<div style={{color:T.sub,fontSize:13,fontFamily:F}}>No boats logged yet. Add yours so Tyee can recommend launches that fit it.</div>}
         {boats.map(b=>(
           <div key={b.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 0',borderBottom:`1px solid ${T.border}`}}>
             <div>
@@ -2807,7 +2903,7 @@ function AccountTab({hasApiKey,onSaveKey,userEmail,onSignOut,allData,T}){
       <div style={cardOf(T)}>
         <SectionHead T={T}>Anthropic API Key</SectionHead>
         <div style={{fontSize:13,color:T.text,marginBottom:8,lineHeight:1.6,fontFamily:F}}>
-          AI Guide, Trip Planner, and photo analysis need your own Anthropic API key to work on this standalone site. Your key is stored only in your browser (and synced to your account if signed in) — it's sent per-request to this site's own server proxy, never baked into the deployed code, and no one else's browser ever sees it.
+          Tyee (your AI guide), Trip Planner, and photo analysis need your own Anthropic API key to work on this standalone site. Your key is stored only in your browser (and synced to your account if signed in) — it's sent per-request to this site's own server proxy, never baked into the deployed code, and no one else's browser ever sees it.
         </div>
         <div style={{fontSize:12,color:T.sub,marginBottom:14,fontFamily:F}}>
           Don't have one? Get a key at <a href="https://console.anthropic.com" target="_blank" rel="noopener noreferrer" style={{color:T.accent}}>console.anthropic.com</a> — set a spending limit there too, since usage on your key is billed to your Anthropic account.
@@ -2816,8 +2912,8 @@ function AccountTab({hasApiKey,onSaveKey,userEmail,onSignOut,allData,T}){
         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
           <span style={{fontSize:12,color:T.sub,fontFamily:F}}>Status:</span>
           {hasApiKey
-            ? <span style={{fontSize:13,color:'#fff',background:T.accent,padding:'3px 10px',borderRadius:14,fontFamily:F,fontWeight:'700'}}>🤖 Key set — AI features ready</span>
-            : <span style={{fontSize:13,color:'#fff',background:T.err,padding:'3px 10px',borderRadius:14,fontFamily:F,fontWeight:'700'}}>⚠ No key set yet</span>
+            ? <span style={{fontSize:13,color:T.accent,border:`1px solid ${T.accent}55`,padding:'3px 10px',borderRadius:14,fontFamily:F,fontWeight:'600'}}>Key set — Tyee ready</span>
+            : <span style={{fontSize:13,color:T.err,border:`1px solid ${T.err}66`,padding:'3px 10px',borderRadius:14,fontFamily:F,fontWeight:'600'}}>No key set yet</span>
           }
         </div>
         {saved&&(
